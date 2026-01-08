@@ -21,16 +21,21 @@
 
 ```mermaid
 flowchart TD
-  U[Unity EditorWindow<br/>Tools/Codex] -->|Prompt/Model/Effort| R[CodexRunner]
-  R -->|cmd.exe /c ...| P[codex exec<br/>--dangerously-bypass-approvals-and-sandbox]
-  P -->|stdout/stderr/out 重定向到文件| F[Library/CodexUnity/runs/{runId}/]
-  R -->|轮询 tail 文件| S[CodexStore<br/>state.json/history.jsonl]
-  S -->|HistoryItem 事件| U
+  U["Unity EditorWindow<br/>Tools/Codex"] -->|Prompt/Model/Effort| R["CodexRunner"]
+  R -->|"cmd.exe /c ..."| P["codex exec<br/>--dangerously-bypass-approvals-and-sandbox"]
+  P -->|"stdout/stderr/out 重定向到文件"| F["Library/CodexUnity/runs/{runId}/"]
+  R -->|"轮询 tail 文件"| S["CodexStore<br/>state.json/history.jsonl"]
+  S -->|"HistoryItem 事件"| U
 
-  subgraph DR[Domain Reload / 重编译]
-    X[AssemblyReloadEvents.beforeAssemblyReload<br/>保存 state] --> Y[重载后 InitializeOnLoad 恢复]
+  %% 用显式节点代表“域重载/重编译”流程，避免 subgraph 直接连线报错
+  DRN["Domain Reload / 重编译"] --> R
+
+  subgraph DR["Domain Reload / 重编译"]
+    X["AssemblyReloadEvents.beforeAssemblyReload<br/>保存 state"] --> Y["重载后 InitializeOnLoad 恢复"]
   end
-  DR --> R
+
+  %% 让 subgraph 内部流程连到这个显式节点
+  Y --> DRN
 ```
 
 ### 为什么不用管道读 stdout/stderr？
