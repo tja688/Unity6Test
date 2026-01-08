@@ -28,10 +28,11 @@ namespace CodexUnity
         {
             try
             {
+                // 使用 cmd.exe /c 包装命令，确保 PATH 环境变量被正确加载
                 var psi = new ProcessStartInfo
                 {
-                    FileName = "codex",
-                    Arguments = "--version",
+                    FileName = "cmd.exe",
+                    Arguments = "/c codex --version",
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -122,10 +123,11 @@ namespace CodexUnity
             // 启动进程
             try
             {
+                // 使用 cmd.exe /c 包装命令，确保 PATH 环境变量被正确加载
                 var psi = new ProcessStartInfo
                 {
-                    FileName = "codex",
-                    Arguments = args,
+                    FileName = "cmd.exe",
+                    Arguments = $"/c codex {args}",
                     WorkingDirectory = CodexStore.ProjectRoot,
                     UseShellExecute = false,
                     CreateNoWindow = true,
@@ -142,6 +144,7 @@ namespace CodexUnity
                 }
 
                 Debug.Log($"[CodexUnity] 启动 codex 进程 PID={process.Id}, runId={_currentRunId}");
+                Debug.Log($"[CodexUnity] 命令: cmd.exe /c codex {args}");
 
                 // 注册轮询
                 EditorApplication.update += PollOutput;
