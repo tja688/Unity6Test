@@ -157,6 +157,8 @@ namespace CodexUnity.Views
             var historyCard = new VisualElement();
             historyCard.AddToClassList("card");
             historyCard.style.flexGrow = 1;
+            historyCard.style.flexShrink = 1;  // 允许收缩
+            historyCard.style.overflow = Overflow.Hidden;  // 确保滚动正常
             historyCard.style.backgroundColor = new Color(0.165f, 0.165f, 0.196f);
             historyCard.style.borderTopLeftRadius = 8;
             historyCard.style.borderTopRightRadius = 8;
@@ -174,9 +176,10 @@ namespace CodexUnity.Views
             historyCard.Add(_historyScroll);
             mainContent.Add(historyCard);
 
-            // === 可折叠 Prompt 区域 ===
+            // === 可折叠 Prompt 区域 (固定高度，不被压缩) ===
             var promptCard = new VisualElement();
             promptCard.AddToClassList("card");
+            promptCard.style.flexShrink = 0;  // 不允许收缩
             promptCard.style.backgroundColor = new Color(0.165f, 0.165f, 0.196f);
             promptCard.style.borderTopLeftRadius = 8;
             promptCard.style.borderTopRightRadius = 8;
