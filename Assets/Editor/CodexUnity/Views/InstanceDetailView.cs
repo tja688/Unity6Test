@@ -212,7 +212,6 @@ namespace CodexUnity.Views
 
             // 点击标题折叠
             headerLeft.RegisterCallback<ClickEvent>(_ => TogglePromptFoldout());
-            headerLeft.style.cursor = new Cursor(); // 表示可点击
 
             promptHeader.Add(headerLeft);
 
