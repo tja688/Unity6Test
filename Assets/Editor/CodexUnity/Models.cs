@@ -8,6 +8,13 @@ namespace CodexUnity
     [Serializable]
     public class CodexState
     {
+        public bool debug;
+        public string activeRunId;
+        public int activePid;
+        public long stdoutOffset;
+        public long stderrOffset;
+        public long eventsOffset;
+        public string activeStatus;
         public bool hasActiveThread;
         public string lastRunId;
         public string lastRunOutPath;
@@ -25,6 +32,12 @@ namespace CodexUnity
         public string role;     // "user" 或 "assistant"
         public string text;     // 消息内容
         public string runId;    // 运行 ID（可选）
+        public string kind;     // "user" | "assistant" | "event" | "stderr" | "system"
+        public string title;    // 气泡标题
+        public string level;    // "info" | "warn" | "error"
+        public int seq;         // 单 run 内递增序号
+        public string source;   // "codex/stdout" 等
+        public string raw;      // 原始行
     }
 
     /// <summary>
@@ -40,6 +53,14 @@ namespace CodexUnity
         public string effort;
         public string time;         // ISO8601 时间戳
         public bool historyWritten; // 是否已写入历史
+        public int pid;
+        public string startedAt;
+        public string finishedAt;
+        public int exitCode;
+        public bool killed;
+        public long stdoutOffset;
+        public long stderrOffset;
+        public long eventsOffset;
     }
 
     /// <summary>

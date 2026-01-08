@@ -1,0 +1,420 @@
+/* ===== Dark Theme Variables ===== */
+:root {
+  --bg: #1a1a1f;
+  --bg-elevated: #222228;
+  --panel: #2a2a32;
+  --panel-hover: #32323c;
+  --panel-strong: #38384a;
+  --ink: #e8e8ec;
+  --ink-secondary: #a8a8b0;
+  --muted: #6c6c78;
+  --accent: #4ecdc4;
+  --accent-strong: #3dbcb3;
+  --accent-dim: rgba(78, 205, 196, 0.15);
+  --danger: #ff6b6b;
+  --danger-dim: rgba(255, 107, 107, 0.15);
+  --warn: #feca57;
+  --warn-dim: rgba(254, 202, 87, 0.15);
+  --success: #26de81;
+  --success-dim: rgba(38, 222, 129, 0.15);
+  --shadow: rgba(0, 0, 0, 0.35);
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --font-body: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", monospace;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
+
+/* ===== Main Scroll Container ===== */
+.main-scroll {
+  flex-grow: 1;
+  background-color: var(--bg);
+}
+
+.main-scroll > * {
+  flex-grow: 1;
+}
+
+/* ===== Root Container ===== */
+.codex-root {
+  position: relative;
+  flex-direction: column;
+  flex-grow: 1;
+  padding: 12px;
+  background-color: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  min-width: 280px;
+}
+
+/* ===== Ambient Orbs (subtle glow) ===== */
+.ambient {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  picking-mode: ignore;
+  opacity: 0.3;
+  overflow: hidden;
+}
+
+.orb {
+  position: absolute;
+  border-radius: 999px;
+  opacity: 0.35;
+}
+
+.orb-a {
+  width: 180px;
+  height: 180px;
+  left: -60px;
+  top: -40px;
+  background-color: #4ecdc4;
+}
+
+.orb-b {
+  width: 220px;
+  height: 220px;
+  right: -80px;
+  bottom: -100px;
+  background-color: #a855f7;
+}
+
+/* ===== Card Base Styles ===== */
+.card {
+  background-color: var(--panel);
+  border-radius: var(--radius-md);
+  border-width: 1px;
+  border-color: var(--border);
+  padding: 10px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.section-title {
+  font-size: 12px;
+  -unity-font-style: bold;
+  margin-bottom: 6px;
+  color: var(--ink);
+  letter-spacing: 0.3px;
+}
+
+/* ===== Top Grid (Environment + Risk) ===== */
+.top-grid {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+
+.env-card {
+  flex-grow: 1;
+  flex-basis: 140px;
+  min-width: 140px;
+}
+
+.risk-card {
+  flex-grow: 1;
+  flex-basis: 180px;
+  min-width: 140px;
+}
+
+.status-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.status-pill {
+  padding: 4px 10px;
+  border-radius: 20px;
+  background-color: var(--panel-strong);
+  font-size: 11px;
+  color: var(--muted);
+  -unity-font-style: bold;
+}
+
+.status-pill.status-ok {
+  background-color: var(--success-dim);
+  color: var(--success);
+}
+
+.status-pill.status-error {
+  background-color: var(--danger-dim);
+  color: var(--danger);
+}
+
+.risk-text {
+  font-size: 11px;
+  color: var(--ink-secondary);
+  white-space: normal;
+  -unity-text-wrap-mode: wrap;
+}
+
+/* ===== Status Bar ===== */
+.status-bar {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  border-width: 1px;
+  border-color: var(--border);
+  margin-bottom: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.status-text {
+  -unity-font-style: bold;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.status-meta {
+  font-size: 10px;
+  color: var(--muted);
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-idle {
+  background-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.status-running {
+  background-color: rgba(78, 205, 196, 0.25);
+  color: var(--accent-strong);
+}
+
+.status-warning {
+  background-color: var(--warn-dim);
+  color: var(--warn);
+}
+
+.status-error {
+  background-color: var(--danger-dim);
+  color: var(--danger);
+}
+
+.status-completed {
+  background-color: var(--success-dim);
+  color: var(--success);
+}
+
+/* ===== History Card (Conversation Area) ===== */
+.history-card {
+  flex-grow: 1;
+  flex-shrink: 1;
+  min-height: 80px;
+}
+
+.history-scroll {
+  flex-grow: 1;
+  flex-shrink: 1;
+  min-height: 60px;
+}
+
+/* ===== Input Card ===== */
+.input-card {
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.input-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.input-field {
+  flex-grow: 1;
+  flex-basis: 100px;
+  min-width: 80px;
+}
+
+.input-field Label {
+  color: var(--ink-secondary);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.input-field TextField {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+}
+
+.input-toggle {
+  min-width: 60px;
+  flex-shrink: 0;
+}
+
+.input-toggle Label {
+  color: var(--ink-secondary);
+  font-size: 11px;
+}
+
+.prompt-field {
+  min-height: 80px;
+  max-height: 160px;
+}
+
+.prompt-field Label {
+  color: var(--ink-secondary);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.prompt-field .unity-text-field__input {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  padding: 8px;
+}
+
+/* ===== Button Row ===== */
+.button-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* Button Base */
+Button {
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: 12px;
+  -unity-font-style: bold;
+  border-width: 1px;
+  transition-duration: 0.15s;
+}
+
+.primary-button {
+  background-color: var(--accent);
+  color: #1a1a1f;
+  border-color: var(--accent);
+}
+
+.primary-button:hover {
+  background-color: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+.primary-button:disabled {
+  background-color: var(--panel-strong);
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+.danger-button {
+  background-color: var(--danger);
+  color: #1a1a1f;
+  border-color: var(--danger);
+}
+
+.danger-button:hover {
+  background-color: #ff5252;
+}
+
+.danger-button:disabled {
+  background-color: var(--panel-strong);
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+.ghost-button {
+  background-color: transparent;
+  border-width: 1px;
+  border-color: var(--border-strong);
+  color: var(--ink-secondary);
+}
+
+.ghost-button:hover {
+  background-color: var(--panel-hover);
+  color: var(--ink);
+}
+
+.ghost-button:disabled {
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+/* ===== Status Box (HelpBox) ===== */
+.status-box {
+  display: none;
+  margin-top: 4px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+/* ===== Text Input Styling ===== */
+TextField .unity-text-field__input {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+}
+
+TextField .unity-text-field__input:focus {
+  border-color: var(--accent);
+}
+
+DropdownField .unity-base-popup-field__input {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+}
+
+DropdownField .unity-base-popup-field__arrow {
+  -unity-background-image-tint-color: var(--ink-secondary);
+}
+
+Toggle .unity-toggle__checkmark {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-strong);
+  border-radius: 3px;
+}
+
+Toggle:checked .unity-toggle__checkmark {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ===== Scrollbar Styling ===== */
+ScrollView .unity-scroller--vertical {
+  width: 8px;
+}
+
+ScrollView .unity-scroller--vertical .unity-slider {
+  width: 8px;
+}
+
+ScrollView .unity-scroller--vertical .unity-base-slider__dragger {
+  width: 6px;
+  border-radius: 3px;
+  background-color: var(--panel-strong);
+}
+
+ScrollView .unity-scroller--vertical .unity-base-slider__tracker {
+  background-color: transparent;
+  border-width: 0;
+}
+
+/* ===== Label Colors ===== */
+Label {
+  color: var(--ink);
+}

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using UnityEngine;
 
 namespace CodexUnity
@@ -107,6 +108,21 @@ namespace CodexUnity
             return Path.Combine(GetRunDir(runId), "out.txt");
         }
 
+        public static string GetStdoutPath(string runId)
+        {
+            return Path.Combine(GetRunDir(runId), "stdout.log");
+        }
+
+        public static string GetStderrPath(string runId)
+        {
+            return Path.Combine(GetRunDir(runId), "stderr.log");
+        }
+
+        public static string GetEventsPath(string runId)
+        {
+            return Path.Combine(GetRunDir(runId), "events.jsonl");
+        }
+
         /// <summary>
         /// 获取元数据文件路径
         /// </summary>
@@ -122,33 +138,19 @@ namespace CodexUnity
         {
             if (!File.Exists(StateFilePath))
             {
-                return new CodexState
-                {
-                    hasActiveThread = false,
-                    model = "gpt-5.1-codex-mini",
-                    effort = "medium"
-                };
+                return CreateDefaultState();
             }
 
             try
             {
-                var json = File.ReadAllText(StateFilePath);
-                return JsonUtility.FromJson<CodexState>(json) ?? new CodexState
-                {
-                    hasActiveThread = false,
-                    model = "gpt-5.1-codex-mini",
-                    effort = "medium"
-                };
+                var json = File.ReadAllText(StateFilePath, Encoding.UTF8);
+                var state = JsonUtility.FromJson<CodexState>(json);
+                return ApplyStateDefaults(state);
             }
             catch (Exception e)
             {
                 Debug.LogWarning($"[CodexUnity] 读取 state.json 失败: {e.Message}");
-                return new CodexState
-                {
-                    hasActiveThread = false,
-                    model = "gpt-5.1-codex-mini",
-                    effort = "medium"
-                };
+                return CreateDefaultState();
             }
         }
 
@@ -159,7 +161,7 @@ namespace CodexUnity
         {
             EnsureDirectoriesExist();
             var json = JsonUtility.ToJson(state, true);
-            File.WriteAllText(StateFilePath, json);
+            File.WriteAllText(StateFilePath, json, Encoding.UTF8);
         }
 
         /// <summary>
@@ -176,14 +178,14 @@ namespace CodexUnity
 
             try
             {
-                var lines = File.ReadAllLines(HistoryFilePath);
+                var lines = File.ReadAllLines(HistoryFilePath, Encoding.UTF8);
                 foreach (var line in lines)
                 {
                     if (string.IsNullOrWhiteSpace(line)) continue;
                     var item = JsonUtility.FromJson<HistoryItem>(line);
                     if (item != null)
                     {
-                        history.Add(item);
+                        history.Add(NormalizeHistoryItem(item));
                     }
                 }
             }
@@ -202,7 +204,7 @@ namespace CodexUnity
         {
             EnsureDirectoriesExist();
             var json = JsonUtility.ToJson(item);
-            File.AppendAllText(HistoryFilePath, json + "\n");
+            File.AppendAllText(HistoryFilePath, json + "\n", Encoding.UTF8);
         }
 
         /// <summary>
@@ -229,7 +231,7 @@ namespace CodexUnity
 
             try
             {
-                var json = File.ReadAllText(metaPath);
+                var json = File.ReadAllText(metaPath, Encoding.UTF8);
                 return JsonUtility.FromJson<RunMeta>(json);
             }
             catch (Exception e)
@@ -252,7 +254,7 @@ namespace CodexUnity
 
             var metaPath = GetMetaPath(meta.runId);
             var json = JsonUtility.ToJson(meta, true);
-            File.WriteAllText(metaPath, json);
+            File.WriteAllText(metaPath, json, Encoding.UTF8);
         }
 
         /// <summary>
@@ -278,6 +280,121 @@ namespace CodexUnity
         public static string GetIso8601Timestamp()
         {
             return DateTime.Now.ToString("yyyy-MM-ddTHH:mm:sszzz");
+        }
+
+        public static List<string> ReadNewLines(string path, ref long offset, ref string partialLineBuffer)
+        {
+            var lines = new List<string>();
+            if (!File.Exists(path))
+            {
+                return lines;
+            }
+
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                if (offset > stream.Length)
+                {
+                    offset = stream.Length;
+                }
+                stream.Seek(offset, SeekOrigin.Begin);
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                var chunk = reader.ReadToEnd();
+                offset = stream.Position;
+
+                if (string.IsNullOrEmpty(chunk))
+                {
+                    return lines;
+                }
+
+                var combined = (partialLineBuffer ?? string.Empty) + chunk;
+                var segments = combined.Split('\n');
+                var endsWithNewline = combined.EndsWith("\n", StringComparison.Ordinal);
+                var lastIndex = segments.Length - 1;
+
+                for (var i = 0; i < segments.Length; i++)
+                {
+                    if (i == lastIndex && !endsWithNewline)
+                    {
+                        partialLineBuffer = segments[i];
+                        break;
+                    }
+
+                    var line = segments[i].TrimEnd('\r');
+                    if (line.Length > 0)
+                    {
+                        lines.Add(line);
+                    }
+                }
+
+                if (endsWithNewline)
+                {
+                    partialLineBuffer = string.Empty;
+                }
+            }
+            catch (IOException)
+            {
+                return lines;
+            }
+
+            return lines;
+        }
+
+        private static CodexState CreateDefaultState()
+        {
+            return new CodexState
+            {
+                hasActiveThread = false,
+                model = "gpt-5.1-codex-mini",
+                effort = "medium",
+                activeStatus = "idle",
+                debug = false
+            };
+        }
+
+        private static CodexState ApplyStateDefaults(CodexState state)
+        {
+            if (state == null)
+            {
+                return CreateDefaultState();
+            }
+
+            if (string.IsNullOrEmpty(state.model))
+            {
+                state.model = "gpt-5.1-codex-mini";
+            }
+
+            if (string.IsNullOrEmpty(state.effort))
+            {
+                state.effort = "medium";
+            }
+
+            if (string.IsNullOrEmpty(state.activeStatus))
+            {
+                state.activeStatus = "idle";
+            }
+
+            return state;
+        }
+
+        private static HistoryItem NormalizeHistoryItem(HistoryItem item)
+        {
+            if (item == null)
+            {
+                return null;
+            }
+
+            if (string.IsNullOrEmpty(item.kind) && !string.IsNullOrEmpty(item.role))
+            {
+                item.kind = item.role;
+            }
+
+            if (string.IsNullOrEmpty(item.role) && (item.kind == "user" || item.kind == "assistant"))
+            {
+                item.role = item.kind;
+            }
+
+            return item;
         }
     }
 }

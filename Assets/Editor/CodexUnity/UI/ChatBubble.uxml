@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ui:UXML xmlns:ui="UnityEngine.UIElements">
+  <ui:VisualElement class="bubble">
+    <ui:VisualElement class="bubble-header">
+      <ui:Label name="titleLabel" class="bubble-title" text="title" />
+      <ui:Label name="timestampLabel" class="bubble-time" text="00:00:00" />
+    </ui:VisualElement>
+    <ui:Label name="bodyLabel" class="bubble-body" text="message" />
+    <ui:VisualElement name="rawContainer" class="bubble-raw">
+      <ui:Label name="rawLabel" class="bubble-raw-text" text="raw" />
+    </ui:VisualElement>
+    <ui:Button name="rawToggle" class="bubble-raw-toggle" text="Show raw" />
+  </ui:VisualElement>
+</ui:UXML>

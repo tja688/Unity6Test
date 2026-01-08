@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ui:UXML xmlns:ui="UnityEngine.UIElements">
+  <ui:ScrollView class="main-scroll" horizontal-scroller-visibility="Hidden">
+    <ui:VisualElement class="codex-root">
+      <!-- Ambient Background Glow -->
+      <ui:VisualElement class="ambient">
+        <ui:VisualElement class="orb orb-a" />
+        <ui:VisualElement class="orb orb-b" />
+      </ui:VisualElement>
+
+      <!-- Top Section: Environment + Risk Cards -->
+      <ui:VisualElement class="top-grid">
+        <ui:VisualElement class="card env-card">
+          <ui:Label class="section-title" text="Environment" />
+          <ui:VisualElement class="status-row">
+            <ui:Label name="gitStatusLabel" class="status-pill" text="Git: --" />
+            <ui:Label name="codexStatusLabel" class="status-pill" text="Codex: --" />
+          </ui:VisualElement>
+        </ui:VisualElement>
+
+        <ui:VisualElement class="card risk-card">
+          <ui:Label class="section-title" text="Risk" />
+          <ui:Label class="risk-text" text="Danger mode enabled. Codex has full system access. Use Git for safety." />
+        </ui:VisualElement>
+      </ui:VisualElement>
+
+      <!-- Status Bar -->
+      <ui:VisualElement name="statusBar" class="status-bar status-idle">
+        <ui:Label name="statusText" class="status-text" text="Idle" />
+        <ui:Label name="statusMeta" class="status-meta" text="No active run" />
+      </ui:VisualElement>
+
+      <!-- Conversation History -->
+      <ui:VisualElement class="card history-card">
+        <ui:Label class="section-title" text="Conversation" />
+        <ui:ScrollView name="historyScroll" class="history-scroll" horizontal-scroller-visibility="Hidden" />
+      </ui:VisualElement>
+
+      <!-- Input Section -->
+      <ui:VisualElement class="card input-card">
+        <ui:Label class="section-title" text="Prompt" />
+        <ui:VisualElement class="input-row">
+          <ui:TextField name="modelField" label="Model" class="input-field" />
+          <ui:DropdownField name="effortField" label="Effort" class="input-field" />
+          <ui:Toggle name="debugToggle" label="Debug" class="input-toggle" />
+        </ui:VisualElement>
+        <ui:TextField name="promptField" label="Message" multiline="true" class="prompt-field" />
+        <ui:VisualElement class="button-row">
+          <ui:Button name="sendButton" text="Send" class="primary-button" />
+          <ui:Button name="newTaskButton" text="New Task" class="ghost-button" />
+          <ui:Button name="killButton" text="Kill" class="danger-button" />
+          <ui:Button name="openRunButton" text="Open Folder" class="ghost-button" />
+          <ui:Button name="copyCommandButton" text="Copy Cmd" class="ghost-button" />
+        </ui:VisualElement>
+      </ui:VisualElement>
+
+      <!-- Status Messages -->
+      <ui:HelpBox name="statusBox" class="status-box" text="" message-type="Info" />
+    </ui:VisualElement>
+  </ui:ScrollView>
+</ui:UXML>

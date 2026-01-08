@@ -1,83 +1,191 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
+using System.Globalization;
 using UnityEditor;
+using UnityEditor.UIElements;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace CodexUnity
 {
     /// <summary>
-    /// Codex Unity 主窗口
+    /// Codex Unity 主窗口 (UI Toolkit)
     /// </summary>
     public class CodexWindow : EditorWindow
     {
-        // UI 状态
-        private string _promptText = "";
-        private string _modelText = "gpt-5.1-codex-mini";
-        private ReasoningEffort _effort = ReasoningEffort.medium;
-        private Vector2 _historyScrollPos;
-        private Vector2 _promptScrollPos;
+        private const string WindowUxmlPath = "Assets/Editor/CodexUnity/UI/CodexWindow.uxml";
+        private const string WindowUssPath = "Assets/Editor/CodexUnity/UI/CodexWindow.uss";
+        private const string BubbleUxmlPath = "Assets/Editor/CodexUnity/UI/ChatBubble.uxml";
 
-        // 环境检查
+        private TextField _promptField;
+        private TextField _modelField;
+        private DropdownField _effortField;
+        private Toggle _debugToggle;
+        private ScrollView _historyScroll;
+        private Label _gitStatusLabel;
+        private Label _codexStatusLabel;
+        private Label _statusTextLabel;
+        private Label _statusMetaLabel;
+        private VisualElement _statusBar;
+        private HelpBox _statusBox;
+        private Button _sendButton;
+        private Button _newTaskButton;
+        private Button _killButton;
+        private Button _openRunButton;
+        private Button _copyCommandButton;
+
+        private VisualTreeAsset _bubbleTemplate;
+
+        private CodexState _state;
         private bool _codexAvailable;
         private string _codexVersion;
         private bool _hasGitRepo;
-        private bool _environmentChecked;
 
-        // 历史记录缓存
-        private List<HistoryItem> _history = new List<HistoryItem>();
-        private string _historyDisplay = "";
-
-        // 状态
-        private CodexState _state;
-        private string _statusMessage = "";
-        private MessageType _statusType = MessageType.Info;
-
-        // 样式
-        private GUIStyle _historyStyle;
-        private GUIStyle _warningBoxStyle;
-        private bool _stylesInitialized;
+        private readonly List<HistoryItem> _history = new List<HistoryItem>();
 
         [MenuItem("Tools/Codex")]
         public static void ShowWindow()
         {
             var window = GetWindow<CodexWindow>("Codex");
-            window.minSize = new Vector2(400, 500);
+            window.minSize = new Vector2(300, 400);
             window.Show();
         }
 
         private void OnEnable()
         {
-            // 加载状态和历史
-            RefreshData();
+            CodexRunner.HistoryItemAppended += OnHistoryItemAppended;
+            CodexRunner.RunStatusChanged += RefreshRunStatus;
+        }
 
-            // 检查环境
+        private void OnDisable()
+        {
+            CodexRunner.HistoryItemAppended -= OnHistoryItemAppended;
+            CodexRunner.RunStatusChanged -= RefreshRunStatus;
+        }
+
+        public void CreateGUI()
+        {
+            rootVisualElement.Clear();
+
+            var visualTree = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(WindowUxmlPath);
+            var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(WindowUssPath);
+            _bubbleTemplate = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(BubbleUxmlPath);
+
+            if (visualTree == null)
+            {
+                rootVisualElement.Add(new Label("Missing UXML: " + WindowUxmlPath));
+                return;
+            }
+
+            var root = visualTree.CloneTree();
+            rootVisualElement.Add(root);
+
+            if (styleSheet != null)
+            {
+                rootVisualElement.styleSheets.Add(styleSheet);
+            }
+
+            var bubbleStyle = AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/Editor/CodexUnity/UI/ChatBubble.uss");
+            if (bubbleStyle != null)
+            {
+                rootVisualElement.styleSheets.Add(bubbleStyle);
+            }
+
+            BindElements();
+            RefreshData();
             CheckEnvironment();
+            LoadHistory();
+            RefreshRunStatus();
+            UpdateSendState();
+            SetStatusMessage(string.Empty, HelpBoxMessageType.Info);
         }
 
         private void OnFocus()
         {
-            // 窗口获得焦点时刷新数据
-            RefreshData();
+            CheckEnvironment();
+            RefreshRunStatus();
+        }
+
+        private void BindElements()
+        {
+            _promptField = rootVisualElement.Q<TextField>("promptField");
+            _modelField = rootVisualElement.Q<TextField>("modelField");
+            _effortField = rootVisualElement.Q<DropdownField>("effortField");
+            _debugToggle = rootVisualElement.Q<Toggle>("debugToggle");
+            _historyScroll = rootVisualElement.Q<ScrollView>("historyScroll");
+            _gitStatusLabel = rootVisualElement.Q<Label>("gitStatusLabel");
+            _codexStatusLabel = rootVisualElement.Q<Label>("codexStatusLabel");
+            _statusTextLabel = rootVisualElement.Q<Label>("statusText");
+            _statusMetaLabel = rootVisualElement.Q<Label>("statusMeta");
+            _statusBar = rootVisualElement.Q<VisualElement>("statusBar");
+            _statusBox = rootVisualElement.Q<HelpBox>("statusBox");
+            _sendButton = rootVisualElement.Q<Button>("sendButton");
+            _newTaskButton = rootVisualElement.Q<Button>("newTaskButton");
+            _killButton = rootVisualElement.Q<Button>("killButton");
+            _openRunButton = rootVisualElement.Q<Button>("openRunButton");
+            _copyCommandButton = rootVisualElement.Q<Button>("copyCommandButton");
+
+            _promptField?.RegisterValueChangedCallback(_ => UpdateSendState());
+
+            if (_sendButton != null)
+            {
+                _sendButton.clicked += Send;
+            }
+
+            if (_newTaskButton != null)
+            {
+                _newTaskButton.clicked += NewTask;
+            }
+
+            if (_killButton != null)
+            {
+                _killButton.clicked += KillRun;
+            }
+
+            if (_openRunButton != null)
+            {
+                _openRunButton.clicked += OpenRunFolder;
+            }
+
+            if (_copyCommandButton != null)
+            {
+                _copyCommandButton.clicked += CopyRunCommand;
+            }
+
+            if (_effortField != null)
+            {
+                _effortField.choices = new List<string> { "minimal", "low", "medium", "high", "xhigh" };
+                _effortField.RegisterValueChangedCallback(_ => SaveUiState());
+            }
+
+            _modelField?.RegisterValueChangedCallback(_ => SaveUiState());
+            if (_debugToggle != null)
+            {
+                _debugToggle.RegisterValueChangedCallback(evt =>
+                {
+                    var state = CodexStore.LoadState();
+                    state.debug = evt.newValue;
+                    CodexStore.SaveState(state);
+                });
+            }
         }
 
         private void RefreshData()
         {
             CodexStore.EnsureDirectoriesExist();
-
             _state = CodexStore.LoadState();
-            _history = CodexStore.LoadHistory();
-            _historyDisplay = BuildHistoryDisplay();
 
-            // 恢复模型和 effort 设置
-            if (!string.IsNullOrEmpty(_state.model))
-            {
-                _modelText = _state.model;
-            }
-            if (!string.IsNullOrEmpty(_state.effort) && Enum.TryParse<ReasoningEffort>(_state.effort, out var effort))
-            {
-                _effort = effort;
-            }
+            _modelField?.SetValueWithoutNotify(string.IsNullOrEmpty(_state.model) ? "gpt-5.1-codex-mini" : _state.model);
+            _effortField?.SetValueWithoutNotify(string.IsNullOrEmpty(_state.effort) ? "medium" : _state.effort);
+            _debugToggle?.SetValueWithoutNotify(_state.debug);
+        }
+
+        private void SaveUiState()
+        {
+            var state = CodexStore.LoadState();
+            state.model = _modelField.value;
+            state.effort = _effortField.value;
+            CodexStore.SaveState(state);
         }
 
         private void CheckEnvironment()
@@ -86,335 +194,319 @@ namespace CodexUnity
             var (available, version) = CodexRunner.CheckCodexAvailable();
             _codexAvailable = available;
             _codexVersion = version;
-            _environmentChecked = true;
-        }
 
-        private void InitStyles()
-        {
-            if (_stylesInitialized) return;
-
-            _historyStyle = new GUIStyle(EditorStyles.textArea)
+            if (_gitStatusLabel != null)
             {
-                wordWrap = true,
-                richText = true,
-                padding = new RectOffset(8, 8, 8, 8)
-            };
+                SetStatusLabel(_gitStatusLabel, _hasGitRepo, "Git: Ready", "Git: Not initialized");
+            }
 
-            _warningBoxStyle = new GUIStyle(EditorStyles.helpBox)
+            if (_codexStatusLabel != null)
             {
-                wordWrap = true,
-                padding = new RectOffset(10, 10, 10, 10),
-                fontSize = 11
-            };
-
-            _stylesInitialized = true;
-        }
-
-        private void OnGUI()
-        {
-            InitStyles();
-
-            EditorGUILayout.Space(5);
-
-            // 环境检查结果
-            DrawEnvironmentStatus();
-
-            EditorGUILayout.Space(10);
-
-            // 风险声明
-            DrawRiskWarning();
-
-            EditorGUILayout.Space(10);
-
-            // 历史显示区
-            DrawHistoryArea();
-
-            EditorGUILayout.Space(10);
-
-            // 输入区
-            DrawInputArea();
-
-            EditorGUILayout.Space(10);
-
-            // 状态提示
-            DrawStatusArea();
-
-            EditorGUILayout.Space(5);
-
-            // 按钮区
-            DrawButtonArea();
-
-            EditorGUILayout.Space(10);
-
-            // 自动刷新
-            if (CodexRunner.IsRunning)
-            {
-                Repaint();
+                var okText = _codexAvailable ? $"Codex: {_codexVersion}" : "Codex: Not found";
+                SetStatusLabel(_codexStatusLabel, _codexAvailable, okText, "Codex: Not found");
             }
         }
 
-        private void DrawEnvironmentStatus()
+        private void SetStatusLabel(Label label, bool ok, string okText, string errorText)
         {
-            EditorGUILayout.LabelField("环境检查", EditorStyles.boldLabel);
+            label.text = ok ? okText : errorText;
+            label.EnableInClassList("status-ok", ok);
+            label.EnableInClassList("status-error", !ok);
+        }
 
-            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+        private void LoadHistory()
+        {
+            _history.Clear();
+            _historyScroll?.Clear();
+
+            var historyItems = CodexStore.LoadHistory();
+            foreach (var item in historyItems)
             {
-                // Git 状态
-                if (_hasGitRepo)
+                _history.Add(item);
+                AddBubble(item, false);
+            }
+
+            ScrollToBottom();
+        }
+
+        private void OnHistoryItemAppended(HistoryItem item)
+        {
+            if (item == null)
+            {
+                return;
+            }
+
+            _history.Add(item);
+            AddBubble(item, true);
+        }
+
+        private void AddBubble(HistoryItem item, bool scroll)
+        {
+            if (_historyScroll == null)
+            {
+                return;
+            }
+
+            if (_bubbleTemplate == null)
+            {
+                _historyScroll.Add(new Label(item.text ?? string.Empty));
+                return;
+            }
+
+            var bubble = new ChatBubbleElement(_bubbleTemplate);
+            var staggerIndex = item.seq > 0 ? item.seq : _history.Count;
+            bubble.Bind(item, scroll, staggerIndex);
+            _historyScroll.Add(bubble);
+
+            if (scroll)
+            {
+                ScrollToBottom();
+            }
+        }
+
+        private void ScrollToBottom()
+        {
+            if (_historyScroll == null || _historyScroll.contentContainer.childCount == 0)
+            {
+                return;
+            }
+
+            var last = _historyScroll.contentContainer[_historyScroll.contentContainer.childCount - 1];
+            _historyScroll.schedule.Execute(() => _historyScroll.ScrollTo(last)).ExecuteLater(1);
+        }
+
+        private void RefreshRunStatus()
+        {
+            _state = CodexStore.LoadState();
+            var runId = _state.activeRunId;
+            var pid = _state.activePid;
+            var status = _state.activeStatus;
+
+            var statusClass = "status-idle";
+            var headline = "Idle";
+
+            if (status == "running")
+            {
+                if (pid > 0 && CodexRunner.IsProcessAlive(pid))
                 {
-                    EditorGUILayout.LabelField("✓ Git 仓库已初始化", EditorStyles.miniLabel);
+                    statusClass = "status-running";
+                    headline = "Running";
                 }
                 else
                 {
-                    EditorGUILayout.LabelField("✗ 未检测到 Git 仓库 - 请先执行 git init",
-                        new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = Color.red } });
-                }
-
-                // Codex 状态
-                if (_codexAvailable)
-                {
-                    EditorGUILayout.LabelField($"✓ Codex CLI: {_codexVersion}", EditorStyles.miniLabel);
-                }
-                else
-                {
-                    EditorGUILayout.LabelField("✗ codex not found in PATH",
-                        new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = Color.red } });
+                    statusClass = "status-warning";
+                    headline = "Warning";
+                    _state.activeStatus = "unknown";
+                    CodexStore.SaveState(_state);
                 }
             }
+            else if (status == "completed")
+            {
+                statusClass = "status-completed";
+                headline = "Completed";
+            }
+            else if (status == "error")
+            {
+                statusClass = "status-error";
+                headline = "Error";
+            }
+            else if (status == "killed")
+            {
+                statusClass = "status-error";
+                headline = "Killed";
+            }
+            else if (status == "unknown")
+            {
+                statusClass = "status-warning";
+                headline = "Unknown";
+            }
+
+            _statusBar?.EnableInClassList("status-idle", statusClass == "status-idle");
+            _statusBar?.EnableInClassList("status-running", statusClass == "status-running");
+            _statusBar?.EnableInClassList("status-warning", statusClass == "status-warning");
+            _statusBar?.EnableInClassList("status-error", statusClass == "status-error");
+            _statusBar?.EnableInClassList("status-completed", statusClass == "status-completed");
+
+            if (_statusTextLabel != null)
+            {
+                _statusTextLabel.text = headline;
+            }
+
+            if (_statusMetaLabel != null)
+            {
+                var outputTime = CodexRunner.LastOutputTime;
+                var outputText = outputTime.HasValue ? outputTime.Value.ToString("HH:mm:ss", CultureInfo.InvariantCulture) : "--";
+                var meta = string.IsNullOrEmpty(runId)
+                    ? "No active run"
+                    : $"runId {runId}  pid {pid}  last output {outputText}";
+                _statusMetaLabel.text = meta;
+            }
+
+            _killButton?.SetEnabled(status == "running");
+            _openRunButton?.SetEnabled(!string.IsNullOrEmpty(runId));
+            _copyCommandButton?.SetEnabled(!string.IsNullOrEmpty(runId));
+
+            UpdateSendState();
         }
 
-        private void DrawRiskWarning()
+        private void UpdateSendState()
         {
-            using (new EditorGUILayout.VerticalScope(_warningBoxStyle))
-            {
-                EditorGUILayout.LabelField("⚠ 高风险警告", EditorStyles.boldLabel);
-                EditorGUILayout.LabelField(
-                    "• 当前使用 --dangerously-bypass-approvals-and-sandbox 模式，Codex 拥有完全的系统访问权限。\n" +
-                    "• Codex 可以修改任意文件、执行任意命令，无需确认。\n" +
-                    "• 请务必使用 Git 管理风险，确保可以回滚任何更改。",
-                    EditorStyles.wordWrappedLabel);
-            }
+            var isRunning = CodexRunner.IsRunning || (_state != null && _state.activeStatus == "running");
+            var promptText = _promptField != null ? _promptField.value : string.Empty;
+            var canSend = !isRunning
+                          && !string.IsNullOrWhiteSpace(promptText)
+                          && _codexAvailable
+                          && _hasGitRepo;
+
+            _sendButton?.SetEnabled(canSend);
         }
 
-        private void DrawHistoryArea()
+        private void SetStatusMessage(string message, HelpBoxMessageType type)
         {
-            EditorGUILayout.LabelField("对话历史", EditorStyles.boldLabel);
-
-            using (var scrollView = new EditorGUILayout.ScrollViewScope(_historyScrollPos,
-                GUILayout.Height(200), GUILayout.ExpandWidth(true)))
+            if (_statusBox == null)
             {
-                _historyScrollPos = scrollView.scrollPosition;
-
-                if (string.IsNullOrEmpty(_historyDisplay))
-                {
-                    EditorGUILayout.LabelField("（无历史）", EditorStyles.centeredGreyMiniLabel);
-                }
-                else
-                {
-                    EditorGUILayout.TextArea(_historyDisplay, _historyStyle, GUILayout.ExpandHeight(true));
-                }
-            }
-        }
-
-        private void DrawInputArea()
-        {
-            EditorGUILayout.LabelField("输入", EditorStyles.boldLabel);
-
-            // Model
-            EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField("Model:", GUILayout.Width(50));
-            _modelText = EditorGUILayout.TextField(_modelText);
-            EditorGUILayout.EndHorizontal();
-
-            // Reasoning Effort
-            EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField("Effort:", GUILayout.Width(50));
-            _effort = (ReasoningEffort)EditorGUILayout.EnumPopup(_effort);
-            EditorGUILayout.EndHorizontal();
-
-            EditorGUILayout.Space(5);
-
-            // Prompt
-            EditorGUILayout.LabelField("Prompt:", GUILayout.Width(50));
-            using (var scrollView = new EditorGUILayout.ScrollViewScope(_promptScrollPos,
-                GUILayout.Height(80), GUILayout.ExpandWidth(true)))
-            {
-                _promptScrollPos = scrollView.scrollPosition;
-                _promptText = EditorGUILayout.TextArea(_promptText, GUILayout.ExpandHeight(true));
-            }
-        }
-
-        private void DrawStatusArea()
-        {
-            // 运行状态
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (CodexRunner.IsRunning)
-                {
-                    var dots = new string('.', (int)(EditorApplication.timeSinceStartup * 2) % 4);
-                    EditorGUILayout.LabelField($"⏳ Running{dots}",
-                        new GUIStyle(EditorStyles.boldLabel) { normal = { textColor = new Color(0.2f, 0.6f, 1f) } });
-                }
-                else if (_state != null && !string.IsNullOrEmpty(_state.lastRunId))
-                {
-                    EditorGUILayout.LabelField($"上次运行: {_state.lastRunId}", EditorStyles.miniLabel);
-                }
-                else
-                {
-                    EditorGUILayout.LabelField("就绪", EditorStyles.miniLabel);
-                }
-
-                // 线程状态
-                GUILayout.FlexibleSpace();
-                if (_state != null && _state.hasActiveThread)
-                {
-                    EditorGUILayout.LabelField("🔗 会话中", EditorStyles.miniLabel);
-                }
+                return;
             }
 
-            // 错误/状态消息
-            if (!string.IsNullOrEmpty(_statusMessage))
+            if (string.IsNullOrEmpty(message))
             {
-                EditorGUILayout.HelpBox(_statusMessage, _statusType);
+                _statusBox.style.display = DisplayStyle.None;
+                return;
             }
-        }
 
-        private void DrawButtonArea()
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUI.enabled = CanSend();
-
-                if (GUILayout.Button("Send", GUILayout.Height(30)))
-                {
-                    Send();
-                }
-
-                GUI.enabled = !CodexRunner.IsRunning;
-
-                if (GUILayout.Button("New Task", GUILayout.Height(30), GUILayout.Width(100)))
-                {
-                    NewTask();
-                }
-
-                GUI.enabled = true;
-            }
-        }
-
-        private bool CanSend()
-        {
-            return !CodexRunner.IsRunning
-                   && !string.IsNullOrWhiteSpace(_promptText)
-                   && _codexAvailable
-                   && _hasGitRepo;
+            _statusBox.text = message;
+            _statusBox.messageType = type;
+            _statusBox.style.display = DisplayStyle.Flex;
         }
 
         private void Send()
         {
-            _statusMessage = "";
-            _statusType = MessageType.Info;
+            SetStatusMessage(string.Empty, HelpBoxMessageType.Info);
 
-            // 二次校验
             if (!_hasGitRepo)
             {
-                _statusMessage = "请先在项目根目录执行 git init（本插件要求 git repo）";
-                _statusType = MessageType.Error;
+                SetStatusMessage("请先在项目根目录执行 git init（本插件要求 git repo）", HelpBoxMessageType.Error);
                 return;
             }
 
             if (!_codexAvailable)
             {
-                _statusMessage = "codex not found in PATH";
-                _statusType = MessageType.Error;
+                SetStatusMessage("codex not found in PATH", HelpBoxMessageType.Error);
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(_promptText))
+            if (string.IsNullOrWhiteSpace(_promptField.value))
             {
-                _statusMessage = "请输入 prompt";
-                _statusType = MessageType.Warning;
+                SetStatusMessage("请输入 prompt", HelpBoxMessageType.Warning);
                 return;
             }
 
-            // 追加用户消息到历史
+            var prompt = _promptField.value;
             var userItem = new HistoryItem
             {
                 ts = CodexStore.GetIso8601Timestamp(),
+                kind = "user",
                 role = "user",
-                text = _promptText
+                text = prompt,
+                source = "ui"
             };
+
             CodexStore.AppendHistory(userItem);
-
-            // 刷新显示
+            AddBubble(userItem, true);
             _history.Add(userItem);
-            _historyDisplay = BuildHistoryDisplay();
 
-            // 执行命令
-            var prompt = _promptText;
-            var model = _modelText;
-            var effort = _effort.ToString();
+            _promptField.value = string.Empty;
+
             var resume = _state.hasActiveThread;
-
-            _promptText = ""; // 清空输入框
+            var model = _modelField.value;
+            var effort = _effortField.value;
 
             CodexRunner.Execute(prompt, model, effort, resume,
-                onComplete: output =>
+                onComplete: _ =>
                 {
-                    RefreshData();
-                    _statusMessage = "运行完成";
-                    _statusType = MessageType.Info;
-                    Repaint();
+                    RefreshRunStatus();
+                    SetStatusMessage("运行完成", HelpBoxMessageType.Info);
                 },
                 onError: error =>
                 {
-                    _statusMessage = error;
-                    _statusType = MessageType.Error;
-                    Repaint();
+                    SetStatusMessage(error, HelpBoxMessageType.Error);
                 });
+
+            UpdateSendState();
         }
 
         private void NewTask()
         {
-            if (EditorUtility.DisplayDialog("新建任务",
+            if (!EditorUtility.DisplayDialog("新建任务",
                 "确定要清空当前对话历史并开始新任务吗？\n（Codex 侧的会话历史仍然保留在 .codex 目录中）",
                 "确定", "取消"))
             {
-                // 清空历史
-                CodexStore.ClearHistory();
-
-                // 重置状态
-                var state = CodexStore.LoadState();
-                state.hasActiveThread = false;
-                state.lastRunId = null;
-                state.lastRunOutPath = null;
-                CodexStore.SaveState(state);
-
-                // 刷新
-                RefreshData();
-                _statusMessage = "已开始新任务";
-                _statusType = MessageType.Info;
+                return;
             }
+
+            CodexStore.ClearHistory();
+
+            var state = CodexStore.LoadState();
+            state.hasActiveThread = false;
+            state.lastRunId = null;
+            state.lastRunOutPath = null;
+            state.activeRunId = null;
+            state.activePid = 0;
+            state.stdoutOffset = 0;
+            state.stderrOffset = 0;
+            state.eventsOffset = 0;
+            state.activeStatus = "idle";
+            CodexStore.SaveState(state);
+
+            LoadHistory();
+            RefreshRunStatus();
+            SetStatusMessage("已开始新任务", HelpBoxMessageType.Info);
         }
 
-        private string BuildHistoryDisplay()
+        private void KillRun()
         {
-            if (_history == null || _history.Count == 0)
+            if (!EditorUtility.DisplayDialog("强杀进程", "确定要强制终止当前 Codex 进程吗？", "强杀", "取消"))
             {
-                return "";
+                return;
             }
 
-            var sb = new StringBuilder();
-            foreach (var item in _history)
+            CodexRunner.KillActiveProcessTree();
+            RefreshRunStatus();
+        }
+
+        private void OpenRunFolder()
+        {
+            var runId = _state.activeRunId;
+            if (string.IsNullOrEmpty(runId))
             {
-                var roleLabel = item.role == "user" ? "👤 用户" : "🤖 Codex";
-                sb.AppendLine($"[{item.ts}]");
-                sb.AppendLine($"<b>{roleLabel}:</b>");
-                sb.AppendLine(item.text);
-                sb.AppendLine();
-                sb.AppendLine("─────────────────────────");
-                sb.AppendLine();
+                return;
             }
-            return sb.ToString();
+
+            var runDir = CodexRunner.GetRunDir(runId);
+            if (string.IsNullOrEmpty(runDir))
+            {
+                return;
+            }
+
+            EditorUtility.RevealInFinder(runDir);
+        }
+
+        private void CopyRunCommand()
+        {
+            var runId = _state.activeRunId;
+            if (string.IsNullOrEmpty(runId))
+            {
+                return;
+            }
+
+            var meta = CodexStore.LoadRunMeta(runId);
+            if (meta == null || string.IsNullOrEmpty(meta.command))
+            {
+                return;
+            }
+
+            EditorGUIUtility.systemCopyBuffer = meta.command;
+            SetStatusMessage("已复制命令", HelpBoxMessageType.Info);
         }
     }
 }
