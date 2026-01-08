@@ -21,6 +21,7 @@ namespace CodexUnity
         public string model;
         public string effort;
         public bool interruptedByReload;  // 被 Domain Reload 中断的标志（文件系统备份）
+        public long lastReloadTime;       // 最后一次 Domain Reload 的时间 (UTC Ticks)
     }
 
     /// <summary>

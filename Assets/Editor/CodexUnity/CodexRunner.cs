@@ -14,6 +14,16 @@ namespace CodexUnity
 {
     /// <summary>
     /// 负责拼命令、启动进程、写 meta/state、采集输出
+    /// 
+    /// 设计说明（v2 - 文件轮询模式）：
+    /// Unity 的 Domain Reload 会杀死所有托管线程，包括管道读取线程。
+    /// 但子进程本身可能不会被杀死，导致进程变成"孤儿"——还在运行但无法通信。
+    /// 
+    /// 解决方案：
+    /// 1. 不使用管道重定向（RedirectStandardOutput/Error）
+    /// 2. 启动进程时，用 cmd /c 包装，将输出重定向到文件
+    /// 3. 使用文件轮询读取输出（Domain Reload 安全）
+    /// 4. Domain Reload 后可以无缝继续读取文件
     /// </summary>
     public static class CodexRunner
     {
@@ -39,6 +49,10 @@ namespace CodexUnity
         private static string _tailEventsPartial = string.Empty;
         private static bool _debugEnabled;
 
+        // 进程退出检测定时器
+        private static double _lastProcessCheckTime;
+        private const double ProcessCheckInterval = 1.0; // 每1秒检查一次进程状态
+
         private static readonly ConcurrentQueue<HistoryItem> PendingItems = new ConcurrentQueue<HistoryItem>();
 
         private static Action<string> _onComplete;
@@ -53,7 +67,14 @@ namespace CodexUnity
             {
                 if (_activeProcess != null)
                 {
-                    return _activeProcess.Id;
+                    try
+                    {
+                        return _activeProcess.Id;
+                    }
+                    catch
+                    {
+                        return null;
+                    }
                 }
 
                 var state = CodexStore.LoadState();
@@ -147,28 +168,27 @@ namespace CodexUnity
 
         private static void OnBeforeAssemblyReload()
         {
-            // 关键修复：不要依赖 _isRunning 静态变量，因为后台线程可能已经更新了它
-            // 直接从持久化状态文件读取，这是最可靠的判断方式
+            // 关键：在 Domain Reload 前保存状态
+            // 不需要设置特殊标志，因为新的设计中，恢复只依赖于文件状态
             var state = CodexStore.LoadState();
             var wasRunning = _isRunning || state.activeStatus == "running";
 
 
-            Debug.Log($"[CodexUnity] OnBeforeAssemblyReload: _isRunning={_isRunning}, state.activeStatus={state.activeStatus}, wasRunning={wasRunning}");
+            Debug.Log($"[CodexUnity] OnBeforeAssemblyReload: _isRunning={_isRunning}, state.activeStatus={state.activeStatus}");
 
 
-            if (wasRunning)
+            if (wasRunning && state.activePid > 0)
             {
-                // 设置中断标志
-                SessionState.SetBool("Codex_WasInterruptedByReload", true);
-
-                // 同时保存到文件，作为备份（SessionState 可能不可靠）
-
-                state.interruptedByReload = true;
+                // 记录 Domain Reload 发生时的状态
+                state.lastReloadTime = DateTime.UtcNow.Ticks;
                 CodexStore.SaveState(state);
-
-
-                Debug.Log("[CodexUnity] 检测到运行中任务，已设置中断标志");
+                Debug.Log($"[CodexUnity] 检测到运行中任务 (PID={state.activePid})，已记录 reload 时间");
             }
+
+            // 清除内存中的进程引用（会被 Domain Reload 销毁）
+
+            _activeProcess = null;
+            _isRunning = false;
         }
 
         public static string GetRunDir(string runId)
@@ -194,6 +214,8 @@ namespace CodexUnity
             var pid = ActivePid;
             if (!pid.HasValue || pid.Value <= 0)
             {
+                // 没有进程，直接清理状态
+                CleanupRunState("killed");
                 return;
             }
 
@@ -227,28 +249,42 @@ namespace CodexUnity
                 DebugLog($"[CodexUnity] taskkill 失败: {e.Message}");
             }
 
+            CleanupRunState("killed");
             EnqueueSystemMessage($"已强杀进程 PID={pid.Value}", "warn");
+        }
+
+        private static void CleanupRunState(string newStatus)
+        {
+            var runId = ActiveRunId;
+
+
             var state = CodexStore.LoadState();
             state.activePid = 0;
-            state.activeStatus = "killed";
+            state.activeStatus = newStatus;
             CodexStore.SaveState(state);
 
-            var runId = ActiveRunId;
             if (!string.IsNullOrEmpty(runId))
             {
                 var meta = CodexStore.LoadRunMeta(runId);
                 if (meta != null)
                 {
-                    meta.killed = true;
+                    meta.killed = newStatus == "killed";
                     meta.finishedAt = CodexStore.GetIso8601Timestamp();
                     CodexStore.SaveRunMeta(meta);
                 }
             }
+
+
+            _isRunning = false;
+            _activeProcess = null;
+            _currentRunId = null;
+
+
             RunStatusChanged?.Invoke();
         }
 
         /// <summary>
-        /// 执行命令
+        /// 执行命令（v2 - 文件输出模式）
         /// </summary>
         public static void Execute(string prompt, string model, string effort, bool resume,
             Action<string> onComplete, Action<string> onError)
@@ -283,22 +319,29 @@ namespace CodexUnity
             _tailStderrPartial = string.Empty;
             _tailEventsPartial = string.Empty;
             _lastTailTime = 0;
+            _lastProcessCheckTime = 0;
 
             _currentRunId = CodexStore.GenerateRunId();
             var runDir = CodexStore.GetRunDir(_currentRunId);
             var outPath = CodexStore.GetOutPath(_currentRunId);
+            var stdoutPath = CodexStore.GetStdoutPath(_currentRunId);
+            var stderrPath = CodexStore.GetStderrPath(_currentRunId);
 
             if (!Directory.Exists(runDir))
             {
                 Directory.CreateDirectory(runDir);
             }
 
-            var args = BuildArguments(prompt, model, effort, resume, outPath);
+            // 创建空的输出文件
+            File.WriteAllText(stdoutPath, "", Encoding.UTF8);
+            File.WriteAllText(stderrPath, "", Encoding.UTF8);
+
+            var codexArgs = BuildArguments(prompt, model, effort, resume, outPath);
 
             var meta = new RunMeta
             {
                 runId = _currentRunId,
-                command = $"codex {args}",
+                command = $"codex {codexArgs}",
                 prompt = prompt,
                 model = model,
                 effort = effort,
@@ -330,22 +373,51 @@ namespace CodexUnity
 
             _debugEnabled = state.debug;
 
+            // 关键变化：使用 cmd /c 包装，将输出重定向到文件
+            // 这样即使管道断开，进程输出仍然会写入文件
+            var cmdArgs = $"/c \"\"{resolvedPath}\" {codexArgs} > \"{stdoutPath}\" 2> \"{stderrPath}\"\"";
+
+
             var psi = new ProcessStartInfo
             {
-                FileName = resolvedPath,
-                Arguments = args,
+                FileName = "cmd.exe",
+                Arguments = cmdArgs,
                 WorkingDirectory = CodexStore.ProjectRoot,
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
+                // 不再使用管道重定向！
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
+                RedirectStandardInput = false
             };
 
             try
             {
-                var process = new Process { StartInfo = psi };
+                var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+
+                // 使用进程事件而不是后台线程来检测退出
+
+                process.Exited += (sender, args) =>
+                {
+                    // 注意：这个回调在线程池线程中执行
+                    // 不能直接操作 Unity API，需要通过队列传递
+                    try
+                    {
+                        var exitInfo = new ExitInfo
+                        {
+                            runId = _currentRunId,
+                            exitCode = process.ExitCode,
+                            killed = _killRequested
+                        };
+                        _pendingExit = exitInfo;
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning($"[CodexUnity] 进程退出事件处理失败: {e.Message}");
+                    }
+                };
+
+
                 if (!process.Start())
                 {
                     _isRunning = false;
@@ -365,67 +437,17 @@ namespace CodexUnity
                 state.activeStatus = "running";
                 CodexStore.SaveState(state);
 
-                DebugLog($"[CodexUnity] 启动 codex 进程 PID={process.Id}, runId={_currentRunId}");
-                DebugLog($"[CodexUnity] 命令: {resolvedPath} {args}");
+                Debug.Log($"[CodexUnity] 启动 codex 进程 PID={process.Id}, runId={_currentRunId}");
+                DebugLog($"[CodexUnity] 命令: cmd.exe {cmdArgs}");
                 DebugLog($"[CodexUnity] 运行目录: {runDir}");
                 DebugLog($"[CodexUnity] 工作目录: {CodexStore.ProjectRoot}");
-
-                var stdoutPath = CodexStore.GetStdoutPath(_currentRunId);
-                var stderrPath = CodexStore.GetStderrPath(_currentRunId);
-
-                _ = Task.Run(() => CaptureStream(process.StandardOutput, stdoutPath, "event", "codex/stdout", "stdout", null));
-                _ = Task.Run(() => CaptureStream(process.StandardError, stderrPath, "stderr", "codex/stderr", "stderr", "warn"));
-                _ = Task.Run(() => WaitForExit(process, _currentRunId));
-
-                DebugLog("[CodexUnity] 采集线程已启动");
+                Debug.Log("[CodexUnity] 使用文件轮询模式读取输出（Domain Reload 安全）");
             }
             catch (Exception e)
             {
                 _isRunning = false;
                 onError?.Invoke($"启动 codex 失败: {e.Message}");
             }
-        }
-
-        private static void WaitForExit(Process process, string runId)
-        {
-            try
-            {
-                process.WaitForExit();
-                var exitInfo = new ExitInfo
-                {
-                    runId = runId,
-                    exitCode = process.ExitCode,
-                    killed = _killRequested
-                };
-
-                _pendingExit = exitInfo;
-            }
-            catch (Exception e)
-            {
-                DebugLog($"[CodexUnity] 等待进程退出失败: {e.Message}");
-            }
-        }
-
-        private static void CaptureStream(StreamReader reader, string logPath, string kind, string source, string title, string level)
-        {
-            try
-            {
-                string line;
-                while ((line = reader.ReadLine()) != null)
-                {
-                    AppendLine(logPath, line);
-                    EnqueueHistoryItem(kind, source, title, level, line);
-                }
-            }
-            catch (Exception e)
-            {
-                DebugLog($"[CodexUnity] 采集输出失败: {e.Message}");
-            }
-        }
-
-        private static void AppendLine(string path, string line)
-        {
-            File.AppendAllText(path, line + "\n", Encoding.UTF8);
         }
 
         private static void EnqueueHistoryItem(string kind, string source, string title, string level, string text)
@@ -439,7 +461,7 @@ namespace CodexUnity
                 level = level,
                 text = text,
                 raw = text,
-                runId = _currentRunId,
+                runId = _currentRunId ?? ActiveRunId,
                 source = source,
                 seq = Interlocked.Increment(ref _seqCounter)
             };
@@ -482,6 +504,7 @@ namespace CodexUnity
             DrainPendingItems();
             HandlePendingExit();
             TailActiveRunFiles();
+            CheckProcessStatus();
         }
 
         private static void DrainPendingItems()
@@ -511,6 +534,8 @@ namespace CodexUnity
             var exitInfo = _pendingExit;
             _pendingExit = null;
 
+            Debug.Log($"[CodexUnity] 进程已退出: runId={exitInfo.runId}, exitCode={exitInfo.exitCode}, killed={exitInfo.killed}");
+
             _isRunning = false;
             _activeProcess = null;
 
@@ -527,6 +552,10 @@ namespace CodexUnity
             state.activePid = 0;
             state.activeStatus = exitInfo.killed ? "killed" : (exitInfo.exitCode == 0 ? "completed" : "error");
             CodexStore.SaveState(state);
+
+            // 最后一次读取所有剩余输出
+            TailActiveRunFilesForce(exitInfo.runId);
+
 
             AppendFinalSummaryIfNeeded(exitInfo.runId);
             RunStatusChanged?.Invoke();
@@ -545,66 +574,73 @@ namespace CodexUnity
             }
         }
 
-        private static void TailActiveRunFiles()
+        /// <summary>
+        /// 检查进程状态（定时执行，用于 Domain Reload 后的恢复场景）
+        /// </summary>
+        private static void CheckProcessStatus()
         {
-            if (_isRunning)
+            // 限制检查频率
+            if (EditorApplication.timeSinceStartup - _lastProcessCheckTime < ProcessCheckInterval)
             {
                 return;
             }
+            _lastProcessCheckTime = EditorApplication.timeSinceStartup;
 
             var state = CodexStore.LoadState();
-            if (string.IsNullOrEmpty(state.activeRunId) || state.activeStatus != "running")
+            if (state.activeStatus != "running" || state.activePid <= 0)
             {
                 return;
             }
 
-            if (state.activePid <= 0 || !IsProcessAlive(state.activePid))
+            // 检查进程是否还在运行
+            if (!IsProcessAlive(state.activePid))
             {
-                if (state.activeStatus == "running")
+                Debug.Log($"[CodexUnity] 检测到进程 {state.activePid} 已退出（可能在 Domain Reload 期间）");
+
+                // 进程已死，完成最后的清理
+
+                var exitInfo = new ExitInfo
                 {
-                    // 关键修复：不要在这里直接改成 "unknown"
-                    // 因为如果是 Domain Reload 导致的进程丢失，我们需要保持 "running" 状态
-                    // 这样 CheckAndRecoverPendingRun 才能正确触发恢复
+                    runId = state.activeRunId,
+                    exitCode = -1, // 未知退出码
+                    killed = false
+                };
+                _pendingExit = exitInfo;
+            }
+        }
 
-                    // 检查是否是 reload 中断
-
-                    if (state.interruptedByReload || SessionState.GetBool("Codex_WasInterruptedByReload", false))
-                    {
-                        // 保持 running 状态，让恢复机制处理
-                        Debug.Log("[CodexUnity] TailActiveRunFiles: 进程丢失，但检测到 reload 中断标志，保持 running 状态");
-                        return;
-                    }
-
-                    // 给一个短延迟，因为 OnBeforeAssemblyReload 可能还没来得及设置标志
-                    // 通过检查 Unity 是否正在编译来判断
-
-                    if (EditorApplication.isCompiling)
-                    {
-                        Debug.Log("[CodexUnity] TailActiveRunFiles: 进程丢失，但 Unity 正在编译中，保持 running 状态");
-                        // 提前设置中断标志，因为我们知道马上要 reload 了
-                        state.interruptedByReload = true;
-                        CodexStore.SaveState(state);
-                        return;
-                    }
-
-                    // 确实是非预期的进程丢失
-
-                    state.activeStatus = "unknown";
-                    CodexStore.SaveState(state);
-                    AppendSystemMessage(state.activeRunId, "warn", "进程已结束或丢失，日志已恢复到最新");
-                    RunStatusChanged?.Invoke();
-                }
+        /// <summary>
+        /// 文件轮询读取输出（Domain Reload 安全）
+        /// </summary>
+        private static void TailActiveRunFiles()
+        {
+            var state = CodexStore.LoadState();
+            if (string.IsNullOrEmpty(state.activeRunId))
+            {
                 return;
             }
 
+            // 只有 running 状态才需要轮询
+            if (state.activeStatus != "running")
+            {
+                return;
+            }
+
+            // 限制轮询频率
             if (EditorApplication.timeSinceStartup - _lastTailTime < 0.2f)
             {
                 return;
             }
-
             _lastTailTime = EditorApplication.timeSinceStartup;
 
-            var runId = state.activeRunId;
+            TailActiveRunFilesForce(state.activeRunId);
+        }
+
+        private static void TailActiveRunFilesForce(string runId)
+        {
+            var state = CodexStore.LoadState();
+
+
             var stdoutPath = CodexStore.GetStdoutPath(runId);
             var stderrPath = CodexStore.GetStderrPath(runId);
             var eventsPath = CodexStore.GetEventsPath(runId);
@@ -635,11 +671,15 @@ namespace CodexUnity
             var any = stdoutLines.Count > 0 || stderrLines.Count > 0 || eventLines.Count > 0;
             if (any)
             {
+                state = CodexStore.LoadState(); // 重新加载以避免覆盖其他更改
                 state.stdoutOffset = stdoutOffset;
                 state.stderrOffset = stderrOffset;
                 state.eventsOffset = eventsOffset;
                 CodexStore.SaveState(state);
-                DebugLog($"[CodexUnity] 追尾输出: stdout {stdoutLines.Count}, stderr {stderrLines.Count}, events {eventLines.Count}");
+
+
+                Interlocked.Exchange(ref _lastOutputTicks, DateTime.UtcNow.Ticks);
+                DebugLog($"[CodexUnity] 读取输出: stdout {stdoutLines.Count}, stderr {stderrLines.Count}, events {eventLines.Count}");
                 RunStatusChanged?.Invoke();
             }
         }
@@ -1060,7 +1100,9 @@ namespace CodexUnity
         }
 
         /// <summary>
-        /// 检查并恢复未完成的运行
+        /// 检查并恢复未完成的运行（v2 - 简化版）
+        /// 由于使用文件轮询模式，Domain Reload 后只需检查进程是否还在运行
+        /// 如果进程还在，继续轮询；如果进程死了，标记完成
         /// </summary>
         public static void CheckAndRecoverPendingRun()
         {
@@ -1071,7 +1113,7 @@ namespace CodexUnity
             var runId = !string.IsNullOrEmpty(state.activeRunId) ? state.activeRunId : state.lastRunId;
 
 
-            Debug.Log($"[CodexUnity] CheckAndRecoverPendingRun: runId={runId}, status={state.activeStatus}, pid={state.activePid}, interruptedByReload={state.interruptedByReload}");
+            Debug.Log($"[CodexUnity] CheckAndRecoverPendingRun: runId={runId}, status={state.activeStatus}, pid={state.activePid}");
 
 
             if (string.IsNullOrEmpty(runId))
@@ -1080,106 +1122,50 @@ namespace CodexUnity
                 return;
             }
 
+            // 重置轮询状态
             _tailStdoutPartial = string.Empty;
             _tailStderrPartial = string.Empty;
             _tailEventsPartial = string.Empty;
 
-            var stdoutPath = CodexStore.GetStdoutPath(runId);
-            var stderrPath = CodexStore.GetStderrPath(runId);
-            var eventsPath = CodexStore.GetEventsPath(runId);
+            // 首先读取所有遗漏的输出
+            TailActiveRunFilesForce(runId);
 
-            var stdoutOffset = state.stdoutOffset;
-            var stderrOffset = state.stderrOffset;
-            var eventsOffset = state.eventsOffset;
-
-            var stdoutLines = CodexStore.ReadNewLines(stdoutPath, ref stdoutOffset, ref _tailStdoutPartial);
-            var stderrLines = CodexStore.ReadNewLines(stderrPath, ref stderrOffset, ref _tailStderrPartial);
-            var eventLines = CodexStore.ReadNewLines(eventsPath, ref eventsOffset, ref _tailEventsPartial);
-
-            foreach (var line in stdoutLines)
+            if (state.activeStatus != "running")
             {
-                AppendRecoveredLine(runId, "event", "codex/stdout", "stdout", null, line);
+                // 不是运行状态，检查是否需要完成
+                AppendFinalSummaryIfNeeded(runId);
+                return;
             }
 
-            foreach (var line in stderrLines)
+            // 检查进程是否还在运行
+            if (state.activePid > 0 && IsProcessAlive(state.activePid))
             {
-                AppendRecoveredLine(runId, "stderr", "codex/stderr", "stderr", "warn", line);
+                // 进程还在！继续轮询输出
+                Debug.Log($"[CodexUnity] 进程 {state.activePid} 仍在运行，继续轮询输出");
+                _isRunning = true; // 标记为运行中，但不持有进程引用
+                AppendSystemMessage(runId, "info", $"检测到进程 {state.activePid} 仍在运行，继续监控...");
             }
-
-            foreach (var line in eventLines)
+            else
             {
-                AppendRecoveredLine(runId, "event", "codex/event", "event", null, line);
-            }
+                // 进程已死
+                Debug.Log($"[CodexUnity] 进程 {state.activePid} 已结束");
 
-            var any = stdoutLines.Count > 0 || stderrLines.Count > 0 || eventLines.Count > 0;
-            if (any)
-            {
-                state.stdoutOffset = stdoutOffset;
-                state.stderrOffset = stderrOffset;
-                state.eventsOffset = eventsOffset;
+                // 读取最后的输出
+
+                TailActiveRunFilesForce(runId);
+
+                // 更新状态
+
+                state.activeStatus = "completed";
+                state.activePid = 0;
                 CodexStore.SaveState(state);
+
+
+                AppendFinalSummaryIfNeeded(runId);
+                AppendSystemMessage(runId, "info", "任务已完成（进程在 Domain Reload 期间结束）");
             }
 
-            // 检查是否需要恢复
-            // 使用两个来源判断：SessionState（内存）和 state.interruptedByReload（文件）
-            var wasInterruptedBySession = SessionState.GetBool("Codex_WasInterruptedByReload", false);
-            var wasInterruptedByFile = state.interruptedByReload;
-            var wasInterrupted = wasInterruptedBySession || wasInterruptedByFile;
-
-
-            Debug.Log($"[CodexUnity] 中断检查: SessionState={wasInterruptedBySession}, FileState={wasInterruptedByFile}, Combined={wasInterrupted}");
-
-            // 进程已死但之前是运行状态
-
-            var processLost = state.activeStatus == "running" && state.activePid > 0 && !IsProcessAlive(state.activePid);
-            Debug.Log($"[CodexUnity] 进程状态: processLost={processLost}, IsProcessAlive={state.activePid > 0 && IsProcessAlive(state.activePid)}");
-
-
-            if (processLost)
-            {
-                if (wasInterrupted)
-                {
-                    // 清除中断标志
-                    SessionState.EraseBool("Codex_WasInterruptedByReload");
-                    state.interruptedByReload = false;
-                    CodexStore.SaveState(state);
-
-
-                    Debug.Log("[CodexUnity] 检测到被 Domain Reload 中断，准备自动恢复...");
-                    ResumeActiveRun(state);
-                    return;
-                }
-
-                // 不是因为 reload 导致的，标记为 unknown
-                state.activeStatus = "unknown";
-                CodexStore.SaveState(state);
-                AppendSystemMessage(runId, "warn", "进程已结束或丢失，日志已恢复到最新");
-            }
-
-            AppendFinalSummaryIfNeeded(runId);
-        }
-
-        private static void ResumeActiveRun(CodexState state)
-        {
-            // 更详细的恢复提示
-            var prompt = "Unity Editor performed a domain reload (script recompilation). " +
-                         "The previous session was interrupted. Please check if the previous operation succeeded " +
-                         "(e.g., if a script was created, verify it exists and compiled without errors). " +
-                         "Then continue with the original task.";
-
-            Debug.Log("[CodexUnity] ResumeActiveRun: 正在自动恢复任务...");
-            AppendSystemMessage(state.activeRunId, "info", "检测到 Domain Reload，正在自动恢复任务...");
-
-            // 重置状态以便启动新进程
-            state.activeStatus = "resuming";
-            state.activePid = 0;
-            CodexStore.SaveState(state);
-
-            // Resume execution
-            Execute(prompt, state.model, state.effort, true,
-
-                result => Debug.Log("[CodexUnity] 恢复执行完成: " + result),
-                error => Debug.LogWarning("[CodexUnity] 恢复执行失败: " + error));
+            RunStatusChanged?.Invoke();
         }
 
         private static void RefreshDebugFlag()

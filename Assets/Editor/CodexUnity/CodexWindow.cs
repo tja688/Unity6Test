@@ -61,12 +61,31 @@ namespace CodexUnity
         {
             CodexRunner.HistoryItemAppended += OnHistoryItemAppended;
             CodexRunner.RunStatusChanged += OnRunStatusChanged;
+            EditorApplication.update += OnEditorUpdate;
         }
 
         private void OnDisable()
         {
             CodexRunner.HistoryItemAppended -= OnHistoryItemAppended;
             CodexRunner.RunStatusChanged -= OnRunStatusChanged;
+            EditorApplication.update -= OnEditorUpdate;
+        }
+
+
+        private bool _wasCompiling;
+
+
+        private void OnEditorUpdate()
+        {
+            // 检测编译状态变化
+            var isCompiling = EditorApplication.isCompiling;
+            if (_wasCompiling && !isCompiling)
+            {
+                // 编译刚刚完成，刷新状态
+                CheckEnvironment();
+                UpdateSendState();
+            }
+            _wasCompiling = isCompiling;
         }
 
         public void CreateGUI()
@@ -110,6 +129,7 @@ namespace CodexUnity
         {
             CheckEnvironment();
             RefreshRunStatus();
+            UpdateSendState();
         }
 
         private void BindElements()
@@ -527,14 +547,27 @@ namespace CodexUnity
 
         private void UpdateSendState()
         {
+            // 始终重新加载状态以确保同步
+            _state = CodexStore.LoadState();
+
             var isRunning = CodexRunner.IsRunning || (_state != null && _state.activeStatus == "running");
+            var isCompiling = EditorApplication.isCompiling;
             var promptText = _promptField != null ? _promptField.value : string.Empty;
             var canSend = !isRunning
+                          && !isCompiling
                           && !string.IsNullOrWhiteSpace(promptText)
                           && _codexAvailable
                           && _hasGitRepo;
 
             _sendButton?.SetEnabled(canSend);
+
+            // 调试信息
+            if (_state != null && _state.debug)
+            {
+                var promptFieldNull = _promptField == null;
+                var rawValue = _promptField?.value ?? "(null)";
+                Debug.Log($"[CodexUnity] UpdateSendState: promptFieldNull={promptFieldNull}, rawValue='{rawValue}', isRunning={isRunning}, isCompiling={isCompiling}, codex={_codexAvailable}, git={_hasGitRepo}, canSend={canSend}");
+            }
         }
 
         private void SetStatusMessage(string message, HelpBoxMessageType type)
