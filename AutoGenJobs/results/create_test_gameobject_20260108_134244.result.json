@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "jobId": "create_test_gameobject_20260108_134244",
+  "status": "DONE",
+  "startedAtUtc": "2026-01-08T05:43:02.3696918Z",
+  "finishedAtUtc": "2026-01-08T05:43:02.3788579Z",
+  "runnerVersion": 3,
+  "unityVersion": "6000.3.0f1",
+  "message": "ok",
+  "commandResults": [
+    {
+      "index": 0,
+      "cmd": "CreateGameObject",
+      "status": "DONE",
+      "message": "Created test",
+      "outputs": {
+        "go": "SceneObject:test"
+      }
+    }
+  ]
+}

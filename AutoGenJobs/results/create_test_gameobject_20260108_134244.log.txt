@@ -1,0 +1,7 @@
+[2026-01-08T05:43:02.369Z][Info] Processing job: create_test_gameobject_20260108_134244
+[2026-01-08T05:43:02.372Z][Info][Cmd:0] Executing: CreateGameObject
+[2026-01-08T05:43:02.374Z][Info][Cmd:0] Creating GameObject: test (ensure mode)
+[2026-01-08T05:43:02.378Z][Debug][Cmd:0] Set position: (0.00, 0.00, 0.00)
+[2026-01-08T05:43:02.378Z][Info][Cmd:0] Created GameObject: test
+[2026-01-08T05:43:02.378Z][Info][Cmd:0] Command CreateGameObject completed
+[2026-01-08T05:43:02.379Z][Info][Cmd:0] Job completed successfully

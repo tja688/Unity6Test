@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "jobId": "create_test_gameobject_20260108_134244",
+  "projectWriteRoot": "Assets/AutoGen",
+  "commands": [
+    {
+      "cmd": "CreateGameObject",
+      "args": {
+        "name": "test",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "ensure": true
+      }
+    }
+  ],
+  "meta": {
+    "note": "Create a scene GameObject named test",
+    "submittedBy": "Codex"
+  }
+}

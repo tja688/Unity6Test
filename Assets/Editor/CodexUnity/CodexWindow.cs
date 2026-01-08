@@ -187,10 +187,11 @@ namespace CodexUnity
         {
             using (new EditorGUILayout.VerticalScope(_warningBoxStyle))
             {
-                EditorGUILayout.LabelField("⚠ 风险声明", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("⚠ 高风险警告", EditorStyles.boldLabel);
                 EditorGUILayout.LabelField(
-                    "• --full-auto 允许 Codex 直接修改你的工程文件并运行命令，可能导致不可预期的改动。\n" +
-                    "• 本 MVP 不提供回滚/审阅，请自行使用 Git 管理风险。",
+                    "• 当前使用 --dangerously-bypass-approvals-and-sandbox 模式，Codex 拥有完全的系统访问权限。\n" +
+                    "• Codex 可以修改任意文件、执行任意命令，无需确认。\n" +
+                    "• 请务必使用 Git 管理风险，确保可以回滚任何更改。",
                     EditorStyles.wordWrappedLabel);
             }
         }

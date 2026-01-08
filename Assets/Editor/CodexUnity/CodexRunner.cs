@@ -172,7 +172,9 @@ namespace CodexUnity
                 sb.Append("exec ");
             }
 
-            sb.Append("--full-auto ");
+            // 使用最高权限模式：绕过所有审批和沙盒限制
+            sb.Append("--dangerously-bypass-approvals-and-sandbox ");
+            sb.Append("--sandbox danger-full-access ");
             sb.Append($"-C \"{CodexStore.ProjectRoot}\" ");
             sb.Append($"--model \"{model}\" ");
             sb.Append($"-c model_reasoning_effort={effort} ");
