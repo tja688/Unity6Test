@@ -713,6 +713,9 @@ namespace CodexUnity
 
         /// <summary>
         /// 构建命令参数
+        /// 注意：exec 和 exec resume 支持的参数不同
+        /// - exec 支持: -m, -c, -o, -C, --dangerously-bypass-approvals-and-sandbox
+        /// - exec resume 支持: -m, -c, --last, --dangerously-bypass-approvals-and-sandbox (无 -o, -C)
         /// </summary>
         private static string BuildArguments(string prompt, string model, string effort, bool resume, string outPath)
         {
@@ -720,20 +723,24 @@ namespace CodexUnity
 
             if (resume)
             {
+                // exec resume 子命令
                 sb.Append("exec resume --last ");
+                sb.Append("--dangerously-bypass-approvals-and-sandbox ");
+                sb.Append($"--model \"{model}\" ");
+                sb.Append($"-c model_reasoning_effort={effort} ");
+                // resume 不支持 -o，prompt 直接放在最后
+                sb.Append($"\"{EscapePrompt(prompt)}\"");
             }
             else
             {
+                // exec 子命令（新任务）
                 sb.Append("exec ");
+                sb.Append("--dangerously-bypass-approvals-and-sandbox ");
+                sb.Append($"--model \"{model}\" ");
+                sb.Append($"-c model_reasoning_effort={effort} ");
+                sb.Append($"-o \"{outPath}\" ");
+                sb.Append($"\"{EscapePrompt(prompt)}\"");
             }
-
-            sb.Append("--dangerously-bypass-approvals-and-sandbox ");
-            sb.Append("--sandbox danger-full-access ");
-            sb.Append($"-C \"{CodexStore.ProjectRoot}\" ");
-            sb.Append($"--model \"{model}\" ");
-            sb.Append($"-c model_reasoning_effort={effort} ");
-            sb.Append($"-o \"{outPath}\" ");
-            sb.Append($"\"{EscapePrompt(prompt)}\"");
 
             return sb.ToString();
         }

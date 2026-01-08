@@ -1,21 +1,13 @@
 /* ===== Chat Bubble Base ===== */
 .bubble {
-  padding: 10px 12px;
-  border-radius: 10px;
-  margin-bottom: 8px;
-  background-color: rgba(42, 42, 50, 0.9);
+  padding: 12px 14px;
+  border-radius: 12px;
+  margin-bottom: 10px;
+  background-color: rgba(42, 42, 50, 0.95);
   border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.06);
-  transition-property: opacity;
-  transition-duration: 180ms;
-  opacity: 1;
-}
-
-.bubble.is-new {
-  opacity: 0;
-}
-
-.bubble.is-new.reveal {
+  border-color: rgba(255, 255, 255, 0.08);
+  transition-property: opacity, background-color;
+  transition-duration: 200ms;
   opacity: 1;
 }
 
@@ -24,15 +16,16 @@
   flex-direction: row;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
 }
 
 .bubble-title {
   -unity-font-style: bold;
   font-size: 11px;
   color: #a8a8b0;
+  letter-spacing: 0.5px;
 }
 
 .bubble-time {
@@ -43,117 +36,136 @@
 /* ===== Bubble Body ===== */
 .bubble-body {
   white-space: normal;
-  -unity-text-wrap-mode: wrap;
   font-size: 12px;
   color: #e8e8ec;
-  word-wrap: break-word;
+  overflow: hidden;
 }
 
-/* ===== Raw Section ===== */
-.bubble-raw {
-  margin-top: 6px;
-  padding: 8px;
-  background-color: rgba(78, 205, 196, 0.08);
-  border-radius: 6px;
-  display: none;
+/* ===== Status Indicator ===== */
+.bubble-status {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top-width: 1px;
+  border-top-color: rgba(255, 255, 255, 0.06);
 }
 
-.bubble-raw-text {
-  font-family: "Cascadia Mono", "Consolas", monospace;
-  font-size: 10px;
-  color: #a8a8b0;
-  white-space: normal;
-  -unity-text-wrap-mode: wrap;
-  word-wrap: break-word;
-}
-
-.bubble-raw-toggle {
-  margin-top: 6px;
-  align-self: flex-start;
-  background-color: transparent;
-  border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.1);
+.bubble-status-dot {
+  width: 8px;
+  height: 8px;
   border-radius: 4px;
-  padding: 4px 8px;
+  background-color: #4ecdc4;
+}
+
+.bubble-status-text {
   font-size: 10px;
   color: #6c6c78;
+  -unity-font-style: italic;
 }
 
-.bubble-raw-toggle:hover {
-  background-color: rgba(255, 255, 255, 0.05);
-  color: #a8a8b0;
+/* ===== Streaming Animation ===== */
+.bubble.streaming {
+  border-color: rgba(78, 205, 196, 0.4);
 }
 
-/* ===== Bubble Types ===== */
+.bubble.streaming .bubble-status-dot {
+  background-color: #4ecdc4;
+}
+
+/* Flash animation for streaming content */
+@keyframes pulse {
+  0% { opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { opacity: 0.4; }
+}
+
+.streaming-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background-color: #4ecdc4;
+  margin-left: 6px;
+}
+
+/* ===== User Bubble (Right Aligned) ===== */
 .bubble.user {
   align-self: flex-end;
-  background-color: rgba(78, 205, 196, 0.18);
-  border-color: rgba(78, 205, 196, 0.3);
+  background-color: rgba(78, 205, 196, 0.2);
+  border-color: rgba(78, 205, 196, 0.35);
   max-width: 85%;
+  margin-left: 40px;
 }
 
 .bubble.user .bubble-title {
   color: #4ecdc4;
 }
 
+.bubble.user .bubble-body {
+  color: #e8e8ec;
+}
+
+/* ===== Assistant Bubble (Left Aligned) ===== */
 .bubble.assistant {
   align-self: flex-start;
   background-color: rgba(168, 85, 247, 0.15);
-  border-color: rgba(168, 85, 247, 0.25);
-  max-width: 85%;
+  border-color: rgba(168, 85, 247, 0.3);
+  max-width: 90%;
+  margin-right: 20px;
 }
 
 .bubble.assistant .bubble-title {
   color: #a855f7;
 }
 
-.bubble.event {
-  align-self: flex-start;
-  background-color: rgba(38, 222, 129, 0.12);
-  border-color: rgba(38, 222, 129, 0.2);
-  max-width: 95%;
+.bubble.assistant.streaming {
+  background-color: rgba(168, 85, 247, 0.2);
+  border-color: rgba(168, 85, 247, 0.5);
 }
 
-.bubble.event .bubble-title {
-  color: #26de81;
+/* ===== Completed State ===== */
+.bubble.completed {
+  border-color: rgba(38, 222, 129, 0.35);
 }
 
-.bubble.stderr {
-  align-self: flex-start;
-  background-color: rgba(255, 107, 107, 0.12);
-  border-color: rgba(255, 107, 107, 0.25);
-  max-width: 95%;
+.bubble.completed .bubble-status-dot {
+  background-color: #26de81;
 }
 
-.bubble.stderr .bubble-title {
+/* ===== Error State ===== */
+.bubble.error {
+  border-color: rgba(255, 107, 107, 0.4);
+}
+
+.bubble.error .bubble-status-dot {
+  background-color: #ff6b6b;
+}
+
+.bubble.error .bubble-status-text {
   color: #ff6b6b;
 }
 
+/* ===== System Message (Centered) ===== */
 .bubble.system {
   align-self: center;
   background-color: rgba(108, 108, 120, 0.2);
-  border-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.1);
   max-width: 90%;
-  text-align: center;
+  padding: 8px 14px;
 }
 
 .bubble.system .bubble-title {
-  color: #6c6c78;
+  display: none;
 }
 
-/* ===== Level Indicators ===== */
-.bubble.level-warn {
-  border-color: rgba(254, 202, 87, 0.5);
+.bubble.system .bubble-body {
+  font-size: 11px;
+  color: #a8a8b0;
+  -unity-text-align: middle-center;
 }
 
-.bubble.level-warn .bubble-title {
-  color: #feca57;
-}
-
-.bubble.level-error {
-  border-color: rgba(255, 107, 107, 0.5);
-}
-
-.bubble.level-error .bubble-title {
-  color: #ff6b6b;
+/* ===== Hidden Elements ===== */
+.hidden {
+  display: none;
 }

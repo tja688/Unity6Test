@@ -1,2 +1,0 @@
-[2026-01-07T12:33:30.057Z][Info] Processing job: tetris_cleanup_20260107_203500
-[2026-01-07T12:33:30.059Z][Error][Cmd:0] Unknown command: DeleteGameObject

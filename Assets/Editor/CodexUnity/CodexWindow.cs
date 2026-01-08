@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using UnityEditor;
-using UnityEditor.UIElements;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -10,6 +10,7 @@ namespace CodexUnity
 {
     /// <summary>
     /// Codex Unity 主窗口 (UI Toolkit)
+    /// 实现消息归并：每轮对话只显示两个气泡（用户 + 助手）
     /// </summary>
     public class CodexWindow : EditorWindow
     {
@@ -41,7 +42,12 @@ namespace CodexUnity
         private string _codexVersion;
         private bool _hasGitRepo;
 
-        private readonly List<HistoryItem> _history = new List<HistoryItem>();
+        // 消息归并状态
+        private ChatBubbleElement _currentAssistantBubble;
+        private string _currentRunId;
+        private StringBuilder _streamBuffer = new StringBuilder();
+        private int _streamLineCount;
+        private double _lastScrollTime;
 
         [MenuItem("Tools/Codex")]
         public static void ShowWindow()
@@ -54,13 +60,13 @@ namespace CodexUnity
         private void OnEnable()
         {
             CodexRunner.HistoryItemAppended += OnHistoryItemAppended;
-            CodexRunner.RunStatusChanged += RefreshRunStatus;
+            CodexRunner.RunStatusChanged += OnRunStatusChanged;
         }
 
         private void OnDisable()
         {
             CodexRunner.HistoryItemAppended -= OnHistoryItemAppended;
-            CodexRunner.RunStatusChanged -= RefreshRunStatus;
+            CodexRunner.RunStatusChanged -= OnRunStatusChanged;
         }
 
         public void CreateGUI()
@@ -94,7 +100,7 @@ namespace CodexUnity
             BindElements();
             RefreshData();
             CheckEnvironment();
-            LoadHistory();
+            LoadConversation();
             RefreshRunStatus();
             UpdateSendState();
             SetStatusMessage(string.Empty, HelpBoxMessageType.Info);
@@ -214,21 +220,83 @@ namespace CodexUnity
             label.EnableInClassList("status-error", !ok);
         }
 
-        private void LoadHistory()
+        /// <summary>
+        /// 加载历史对话（归并后的形式）
+        /// </summary>
+        private void LoadConversation()
         {
-            _history.Clear();
             _historyScroll?.Clear();
+            _currentAssistantBubble = null;
+            _currentRunId = null;
+            _streamBuffer.Clear();
+            _streamLineCount = 0;
 
             var historyItems = CodexStore.LoadHistory();
+
+            // 按 runId 分组，归并消息
+
+            string lastUserRunId = null;
+            ChatBubbleElement lastAssistantBubble = null;
+            StringBuilder assistantContent = new StringBuilder();
+
             foreach (var item in historyItems)
             {
-                _history.Add(item);
-                AddBubble(item, false);
+                var kind = GetItemKind(item);
+
+                if (kind == "user")
+                {
+                    // 如果有未完成的助手气泡，先完成它
+                    if (lastAssistantBubble != null && assistantContent.Length > 0)
+                    {
+                        lastAssistantBubble.CompleteStream(GetFinalContent(assistantContent.ToString()), true);
+                    }
+                    lastAssistantBubble = null;
+                    assistantContent.Clear();
+
+                    // 创建用户气泡
+                    var userBubble = CreateBubble();
+                    userBubble.BindUserMessage(item.text, item.ts);
+                    _historyScroll?.Add(userBubble);
+                    lastUserRunId = item.runId;
+                }
+                else if (kind == "assistant")
+                {
+                    // 完整的助手回复
+                    if (lastAssistantBubble != null)
+                    {
+                        assistantContent.AppendLine(item.text);
+                    }
+                    else
+                    {
+                        lastAssistantBubble = CreateBubble();
+                        lastAssistantBubble.BindSystemMessage(item.text, item.ts);
+                        // 转换为 assistant 样式
+                        lastAssistantBubble.Bind(item, false, 0);
+                        _historyScroll?.Add(lastAssistantBubble);
+                    }
+                }
+                else if (kind == "system")
+                {
+                    // 系统消息单独显示
+                    var sysBubble = CreateBubble();
+                    sysBubble.BindSystemMessage(item.text, item.ts);
+                    _historyScroll?.Add(sysBubble);
+                }
+                // 其他消息类型（event, stderr）在历史加载时忽略
+            }
+
+            // 完成最后一个助手气泡
+            if (lastAssistantBubble != null && assistantContent.Length > 0)
+            {
+                lastAssistantBubble.CompleteStream(GetFinalContent(assistantContent.ToString()), true);
             }
 
             ScrollToBottom();
         }
 
+        /// <summary>
+        /// 处理新增的历史项目（实时流式更新）
+        /// </summary>
         private void OnHistoryItemAppended(HistoryItem item)
         {
             if (item == null)
@@ -236,32 +304,140 @@ namespace CodexUnity
                 return;
             }
 
-            _history.Add(item);
-            AddBubble(item, true);
-        }
+            var kind = GetItemKind(item);
 
-        private void AddBubble(HistoryItem item, bool scroll)
-        {
-            if (_historyScroll == null)
+            // 用户消息：直接显示新气泡
+            if (kind == "user")
             {
+                // 如果有正在进行的助手气泡，先完成它
+                if (_currentAssistantBubble != null && _currentAssistantBubble.IsStreaming)
+                {
+                    _currentAssistantBubble.CompleteStream(GetFinalContent(_streamBuffer.ToString()), true);
+                }
+
+                _currentAssistantBubble = null;
+                _streamBuffer.Clear();
+                _streamLineCount = 0;
+
+                var userBubble = CreateBubble();
+                userBubble.BindUserMessage(item.text, item.ts);
+                _historyScroll?.Add(userBubble);
+                ScrollToBottom();
                 return;
             }
 
-            if (_bubbleTemplate == null)
+            // 助手最终回复
+            if (kind == "assistant")
             {
-                _historyScroll.Add(new Label(item.text ?? string.Empty));
+                if (_currentAssistantBubble != null && _currentAssistantBubble.IsStreaming)
+                {
+                    _currentAssistantBubble.CompleteStream(item.text, true);
+                    _currentAssistantBubble = null;
+                    _streamBuffer.Clear();
+                    _streamLineCount = 0;
+                }
+                else
+                {
+                    // 没有正在进行的气泡，创建一个新的
+                    var bubble = CreateBubble();
+                    bubble.Bind(item, false, 0);
+                    _historyScroll?.Add(bubble);
+                }
+                ScrollToBottom();
                 return;
             }
 
-            var bubble = new ChatBubbleElement(_bubbleTemplate);
-            var staggerIndex = item.seq > 0 ? item.seq : _history.Count;
-            bubble.Bind(item, scroll, staggerIndex);
-            _historyScroll.Add(bubble);
-
-            if (scroll)
+            // 系统消息
+            if (kind == "system")
             {
+                var sysBubble = CreateBubble();
+                sysBubble.BindSystemMessage(item.text, item.ts);
+                _historyScroll?.Add(sysBubble);
+                ScrollToBottom();
+                return;
+            }
+
+            // 流式输出（event, stderr 等）：归并到当前助手气泡
+            if (_currentAssistantBubble == null || !_currentAssistantBubble.IsStreaming)
+            {
+                // 创建新的流式助手气泡
+                _currentAssistantBubble = CreateBubble();
+                _currentAssistantBubble.BindAssistantStreaming(item.runId, item.ts);
+                _historyScroll?.Add(_currentAssistantBubble);
+                _currentRunId = item.runId;
+                _streamBuffer.Clear();
+                _streamLineCount = 0;
+            }
+
+            // 追加内容到缓冲区
+            if (!string.IsNullOrEmpty(item.text))
+            {
+                _streamBuffer.AppendLine(item.text);
+                _streamLineCount++;
+            }
+
+            // 更新气泡显示（显示最新内容）
+            _currentAssistantBubble.UpdateStreamContent(_streamBuffer.ToString(), _streamLineCount);
+
+            // 节流滚动
+            if (EditorApplication.timeSinceStartup - _lastScrollTime > 0.3)
+            {
+                _lastScrollTime = EditorApplication.timeSinceStartup;
                 ScrollToBottom();
             }
+        }
+
+        /// <summary>
+        /// 运行状态变化时检查是否需要完成流式气泡
+        /// </summary>
+        private void OnRunStatusChanged()
+        {
+            RefreshRunStatus();
+
+            // 检查是否任务已完成
+            _state = CodexStore.LoadState();
+            if (_state.activeStatus != "running" && _currentAssistantBubble != null && _currentAssistantBubble.IsStreaming)
+            {
+                var success = _state.activeStatus == "completed";
+                var finalContent = GetFinalContent(_streamBuffer.ToString());
+
+                // 尝试读取 out.txt 获取最终摘要
+
+                if (!string.IsNullOrEmpty(_state.lastRunId))
+                {
+                    var outPath = CodexStore.GetOutPath(_state.lastRunId);
+                    if (System.IO.File.Exists(outPath))
+                    {
+                        try
+                        {
+                            var outContent = System.IO.File.ReadAllText(outPath, Encoding.UTF8);
+                            if (!string.IsNullOrWhiteSpace(outContent))
+                            {
+                                finalContent = outContent;
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore
+                        }
+                    }
+                }
+
+                _currentAssistantBubble.CompleteStream(finalContent, success);
+                _currentAssistantBubble = null;
+                _streamBuffer.Clear();
+                _streamLineCount = 0;
+                ScrollToBottom();
+            }
+        }
+
+        private ChatBubbleElement CreateBubble()
+        {
+            if (_bubbleTemplate == null)
+            {
+                return new ChatBubbleElement(null);
+            }
+            return new ChatBubbleElement(_bubbleTemplate);
         }
 
         private void ScrollToBottom()
@@ -272,7 +448,7 @@ namespace CodexUnity
             }
 
             var last = _historyScroll.contentContainer[_historyScroll.contentContainer.childCount - 1];
-            _historyScroll.schedule.Execute(() => _historyScroll.ScrollTo(last)).ExecuteLater(1);
+            _historyScroll.schedule.Execute(() => _historyScroll.ScrollTo(last)).ExecuteLater(10);
         }
 
         private void RefreshRunStatus()
@@ -412,8 +588,13 @@ namespace CodexUnity
             };
 
             CodexStore.AppendHistory(userItem);
-            AddBubble(userItem, true);
-            _history.Add(userItem);
+
+            // 创建用户气泡
+
+            var userBubble = CreateBubble();
+            userBubble.BindUserMessage(prompt, userItem.ts);
+            _historyScroll?.Add(userBubble);
+            ScrollToBottom();
 
             _promptField.value = string.Empty;
 
@@ -430,6 +611,12 @@ namespace CodexUnity
                 onError: error =>
                 {
                     SetStatusMessage(error, HelpBoxMessageType.Error);
+                    // 完成流式气泡（失败状态）
+                    if (_currentAssistantBubble != null && _currentAssistantBubble.IsStreaming)
+                    {
+                        _currentAssistantBubble.CompleteStream(error, false);
+                        _currentAssistantBubble = null;
+                    }
                 });
 
             UpdateSendState();
@@ -458,7 +645,11 @@ namespace CodexUnity
             state.activeStatus = "idle";
             CodexStore.SaveState(state);
 
-            LoadHistory();
+            _currentAssistantBubble = null;
+            _streamBuffer.Clear();
+            _streamLineCount = 0;
+
+            LoadConversation();
             RefreshRunStatus();
             SetStatusMessage("已开始新任务", HelpBoxMessageType.Info);
         }
@@ -507,6 +698,49 @@ namespace CodexUnity
 
             EditorGUIUtility.systemCopyBuffer = meta.command;
             SetStatusMessage("已复制命令", HelpBoxMessageType.Info);
+        }
+
+        // === Helper Methods ===
+
+        private static string GetItemKind(HistoryItem item)
+        {
+            if (!string.IsNullOrEmpty(item.kind))
+            {
+                return item.kind;
+            }
+            if (!string.IsNullOrEmpty(item.role))
+            {
+                return item.role;
+            }
+            return "event";
+        }
+
+        private static string GetFinalContent(string streamContent)
+        {
+            if (string.IsNullOrWhiteSpace(streamContent))
+            {
+                return "Task completed.";
+            }
+
+            // 尝试提取最后有意义的内容
+            var lines = streamContent.Split('\n');
+            var meaningfulLines = new List<string>();
+
+            for (int i = lines.Length - 1; i >= 0 && meaningfulLines.Count < 20; i--)
+            {
+                var line = lines[i].Trim();
+                if (!string.IsNullOrEmpty(line))
+                {
+                    meaningfulLines.Insert(0, line);
+                }
+            }
+
+            if (meaningfulLines.Count == 0)
+            {
+                return "Task completed.";
+            }
+
+            return string.Join("\n", meaningfulLines);
         }
     }
 }

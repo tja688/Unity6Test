@@ -5,16 +5,26 @@ using UnityEngine.UIElements;
 
 namespace CodexUnity
 {
+    /// <summary>
+    /// 聊天气泡元素 - 支持流式更新和状态显示
+    /// </summary>
     public class ChatBubbleElement : VisualElement
     {
         private readonly VisualElement _root;
         private readonly Label _titleLabel;
         private readonly Label _timestampLabel;
         private readonly Label _bodyLabel;
-        private readonly Label _rawLabel;
-        private readonly VisualElement _rawContainer;
-        private readonly Button _rawToggle;
-        private bool _rawVisible;
+        private readonly VisualElement _statusContainer;
+        private readonly VisualElement _statusDot;
+        private readonly Label _statusText;
+
+        private string _runId;
+        private bool _isStreaming;
+        private int _updateCount;
+        private IVisualElementScheduledItem _flashSchedule;
+
+        public string RunId => _runId;
+        public bool IsStreaming => _isStreaming;
 
         public ChatBubbleElement(VisualTreeAsset template)
         {
@@ -29,15 +39,159 @@ namespace CodexUnity
             _titleLabel = _root.Q<Label>("titleLabel");
             _timestampLabel = _root.Q<Label>("timestampLabel");
             _bodyLabel = _root.Q<Label>("bodyLabel");
-            _rawLabel = _root.Q<Label>("rawLabel");
-            _rawContainer = _root.Q<VisualElement>("rawContainer");
-            _rawToggle = _root.Q<Button>("rawToggle");
+            _statusContainer = _root.Q<VisualElement>("statusContainer");
+            _statusDot = _root.Q<VisualElement>("statusDot");
+            _statusText = _root.Q<Label>("statusText");
+        }
 
-            if (_rawToggle != null)
+        /// <summary>
+        /// 初始化用户消息气泡
+        /// </summary>
+        public void BindUserMessage(string message, string timestamp)
+        {
+            _runId = null;
+            _isStreaming = false;
+
+            ApplyKindClass("user");
+
+            if (_titleLabel != null)
             {
-                _rawToggle.clicked += ToggleRaw;
+                _titleLabel.text = "You";
+            }
+
+            if (_timestampLabel != null)
+            {
+                _timestampLabel.text = FormatTimestamp(timestamp);
+            }
+
+            if (_bodyLabel != null)
+            {
+                _bodyLabel.text = message ?? string.Empty;
+            }
+
+            HideStatus();
+        }
+
+        /// <summary>
+        /// 初始化 Assistant 响应气泡（开始流式输出）
+        /// </summary>
+        public void BindAssistantStreaming(string runId, string timestamp)
+        {
+            _runId = runId;
+            _isStreaming = true;
+            _updateCount = 0;
+
+            ApplyKindClass("assistant");
+            _root.AddToClassList("streaming");
+
+            if (_titleLabel != null)
+            {
+                _titleLabel.text = "Codex";
+            }
+
+            if (_timestampLabel != null)
+            {
+                _timestampLabel.text = FormatTimestamp(timestamp);
+            }
+
+            if (_bodyLabel != null)
+            {
+                _bodyLabel.text = "Starting...";
+            }
+
+            ShowStatus("Processing...");
+            StartFlashAnimation();
+        }
+
+        /// <summary>
+        /// 更新流式输出内容
+        /// </summary>
+        public void UpdateStreamContent(string content, int lineCount = 0)
+        {
+            if (!_isStreaming)
+            {
+                return;
+            }
+
+            _updateCount++;
+
+            if (_bodyLabel != null)
+            {
+                // 截取最后的内容，避免显示过长
+                var displayText = TruncateForDisplay(content, 500);
+                _bodyLabel.text = displayText;
+            }
+
+            if (_statusText != null)
+            {
+                _statusText.text = $"Processing... ({lineCount} lines)";
+            }
+
+            // 更新时间戳
+            if (_timestampLabel != null)
+            {
+                _timestampLabel.text = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
             }
         }
+
+        /// <summary>
+        /// 完成流式输出，显示最终结果
+        /// </summary>
+        public void CompleteStream(string finalContent, bool success = true)
+        {
+            _isStreaming = false;
+            StopFlashAnimation();
+
+            _root.RemoveFromClassList("streaming");
+            _root.AddToClassList(success ? "completed" : "error");
+
+            if (_bodyLabel != null)
+            {
+                _bodyLabel.text = string.IsNullOrWhiteSpace(finalContent)
+
+                    ? (success ? "Task completed." : "Task failed.")
+
+                    : finalContent;
+            }
+
+            if (_timestampLabel != null)
+            {
+                _timestampLabel.text = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+            }
+
+            ShowStatus(success ? "Completed" : "Failed");
+        }
+
+        /// <summary>
+        /// 绑定系统消息
+        /// </summary>
+        public void BindSystemMessage(string message, string timestamp)
+        {
+            _runId = null;
+            _isStreaming = false;
+
+            ApplyKindClass("system");
+
+            if (_titleLabel != null)
+            {
+                _titleLabel.text = "System";
+            }
+
+            if (_timestampLabel != null)
+            {
+                _timestampLabel.text = FormatTimestamp(timestamp);
+            }
+
+            if (_bodyLabel != null)
+            {
+                _bodyLabel.text = message ?? string.Empty;
+            }
+
+            HideStatus();
+        }
+
+        // === Legacy API for compatibility ===
+
 
         public void Bind(HistoryItem item, bool animate, int staggerIndex = 0)
         {
@@ -47,14 +201,13 @@ namespace CodexUnity
             }
 
             var kind = GetKind(item);
-            var level = string.IsNullOrEmpty(item.level) ? "info" : item.level;
+            _runId = item.runId;
 
-            ApplyKindClasses(kind);
-            ApplyLevelClasses(level);
+            ApplyKindClass(kind);
 
             if (_titleLabel != null)
             {
-                _titleLabel.text = string.IsNullOrEmpty(item.title) ? GetDefaultTitle(kind) : item.title;
+                _titleLabel.text = GetTitleForKind(kind);
             }
 
             if (_timestampLabel != null)
@@ -67,71 +220,109 @@ namespace CodexUnity
                 _bodyLabel.text = item.text ?? string.Empty;
             }
 
-            var rawText = string.IsNullOrEmpty(item.raw) ? string.Empty : item.raw;
-            var showRaw = !string.IsNullOrEmpty(rawText) && rawText != (item.text ?? string.Empty);
+            HideStatus();
+        }
 
-            if (_rawLabel != null)
+        // === Private Helpers ===
+
+        private void ApplyKindClass(string kind)
+        {
+            _root.RemoveFromClassList("user");
+            _root.RemoveFromClassList("assistant");
+            _root.RemoveFromClassList("system");
+            _root.RemoveFromClassList("streaming");
+            _root.RemoveFromClassList("completed");
+            _root.RemoveFromClassList("error");
+
+            if (!string.IsNullOrEmpty(kind))
             {
-                _rawLabel.text = rawText;
-            }
-
-            if (_rawContainer != null)
-            {
-                _rawContainer.style.display = DisplayStyle.None;
-            }
-
-            if (_rawToggle != null)
-            {
-                _rawToggle.style.display = showRaw ? DisplayStyle.Flex : DisplayStyle.None;
-                _rawToggle.text = "Show raw";
-            }
-
-            _rawVisible = false;
-
-            if (animate)
-            {
-                _root.AddToClassList("is-new");
-                var delay = Mathf.Clamp(staggerIndex * 24, 0, 240);
-                _root.schedule.Execute(() =>
-                {
-                    _root.AddToClassList("reveal");
-                    _root.RemoveFromClassList("is-new");
-                }).ExecuteLater(delay);
+                _root.AddToClassList(kind);
             }
         }
 
-        private void ToggleRaw()
+        private void ShowStatus(string text)
         {
-            if (_rawContainer == null || _rawToggle == null)
+            if (_statusContainer != null)
+            {
+                _statusContainer.RemoveFromClassList("hidden");
+            }
+
+            if (_statusText != null)
+            {
+                _statusText.text = text;
+            }
+        }
+
+        private void HideStatus()
+        {
+            if (_statusContainer != null)
+            {
+                _statusContainer.AddToClassList("hidden");
+            }
+        }
+
+        private void StartFlashAnimation()
+        {
+            StopFlashAnimation();
+
+            if (_statusDot == null)
             {
                 return;
             }
 
-            _rawVisible = !_rawVisible;
-            _rawContainer.style.display = _rawVisible ? DisplayStyle.Flex : DisplayStyle.None;
-            _rawToggle.text = _rawVisible ? "Hide raw" : "Show raw";
+            var flashState = false;
+            _flashSchedule = _statusDot.schedule.Execute(() =>
+            {
+                flashState = !flashState;
+                _statusDot.style.opacity = flashState ? 1f : 0.3f;
+            }).Every(400);
         }
 
-        private void ApplyKindClasses(string kind)
+        private void StopFlashAnimation()
         {
-            _root.EnableInClassList("user", kind == "user");
-            _root.EnableInClassList("assistant", kind == "assistant");
-            _root.EnableInClassList("event", kind == "event");
-            _root.EnableInClassList("stderr", kind == "stderr");
-            _root.EnableInClassList("system", kind == "system");
+            if (_flashSchedule != null)
+            {
+                _flashSchedule.Pause();
+                _flashSchedule = null;
+            }
+
+            if (_statusDot != null)
+            {
+                _statusDot.style.opacity = 1f;
+            }
         }
 
-        private void ApplyLevelClasses(string level)
+        private static string TruncateForDisplay(string content, int maxLength)
         {
-            _root.EnableInClassList("level-warn", level == "warn");
-            _root.EnableInClassList("level-error", level == "error");
+            if (string.IsNullOrEmpty(content))
+            {
+                return string.Empty;
+            }
+
+            // 获取最后 N 个字符
+            if (content.Length > maxLength)
+            {
+                var truncated = content.Substring(content.Length - maxLength);
+                // 找到第一个换行符，从那里开始显示
+                var firstNewline = truncated.IndexOf('\n');
+                if (firstNewline > 0 && firstNewline < 50)
+                {
+                    truncated = truncated.Substring(firstNewline + 1);
+                }
+                return "..." + truncated;
+            }
+
+            return content;
         }
 
         private static string GetKind(HistoryItem item)
         {
             if (!string.IsNullOrEmpty(item.kind))
             {
-                return item.kind;
+                if (item.kind == "user" || item.kind == "assistant" || item.kind == "system")
+                {
+                    return item.kind;
+                }
             }
 
             if (!string.IsNullOrEmpty(item.role))
@@ -139,23 +330,21 @@ namespace CodexUnity
                 return item.role;
             }
 
-            return "event";
+            return "assistant";
         }
 
-        private static string GetDefaultTitle(string kind)
+        private static string GetTitleForKind(string kind)
         {
             switch (kind)
             {
                 case "user":
-                    return "User";
+                    return "You";
                 case "assistant":
-                    return "Assistant";
-                case "stderr":
-                    return "Stderr";
+                    return "Codex";
                 case "system":
                     return "System";
                 default:
-                    return "Event";
+                    return "Codex";
             }
         }
 
@@ -163,7 +352,7 @@ namespace CodexUnity
         {
             if (string.IsNullOrEmpty(ts))
             {
-                return "--:--:--";
+                return DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
             }
 
             if (DateTime.TryParse(ts, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsed))

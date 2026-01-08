@@ -1,13 +1,5 @@
 {
   "dependencies": {
-    "com.autogen.jobs": {
-      "version": "file:C:/Users/jinji/Desktop/Project/AI开发工作流/自动化执行引擎/com.autogen.jobs",
-      "depth": 0,
-      "source": "local",
-      "dependencies": {
-        "com.unity.nuget.newtonsoft-json": "3.2.1"
-      }
-    },
     "com.unity.2d.animation": {
       "version": "13.0.2",
       "depth": 1,
@@ -331,6 +323,14 @@
         "com.unity.modules.jsonserialize": "1.0.0"
       },
       "url": "https://packages.unity.com"
+    },
+    "com.unitymcp.server": {
+      "version": "file:C:/Users/jinji/Desktop/Project/AI开发工作流/UnityMCP__1.0.6_重构了服务和插件之间的交互方式，修复了windows问题/UnityMCP_Encrypted_1.0.6_20251214_014355/com.unitymcp.server",
+      "depth": 0,
+      "source": "local",
+      "dependencies": {
+        "com.unity.nuget.newtonsoft-json": "3.2.1"
+      }
     },
     "com.unity.modules.accessibility": {
       "version": "1.0.0",

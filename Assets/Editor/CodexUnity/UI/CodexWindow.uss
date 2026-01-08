@@ -20,8 +20,6 @@
   --shadow: rgba(0, 0, 0, 0.35);
   --border: rgba(255, 255, 255, 0.06);
   --border-strong: rgba(255, 255, 255, 0.12);
-  --font-body: "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  --font-mono: "Cascadia Mono", "Consolas", monospace;
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
@@ -45,7 +43,6 @@
   padding: 12px;
   background-color: var(--bg);
   color: var(--ink);
-  font-family: var(--font-body);
   min-width: 280px;
 }
 

@@ -6,9 +6,9 @@
       <ui:Label name="timestampLabel" class="bubble-time" text="00:00:00" />
     </ui:VisualElement>
     <ui:Label name="bodyLabel" class="bubble-body" text="message" />
-    <ui:VisualElement name="rawContainer" class="bubble-raw">
-      <ui:Label name="rawLabel" class="bubble-raw-text" text="raw" />
+    <ui:VisualElement name="statusContainer" class="bubble-status hidden">
+      <ui:VisualElement name="statusDot" class="bubble-status-dot" />
+      <ui:Label name="statusText" class="bubble-status-text" text="Processing..." />
     </ui:VisualElement>
-    <ui:Button name="rawToggle" class="bubble-raw-toggle" text="Show raw" />
   </ui:VisualElement>
 </ui:UXML>
