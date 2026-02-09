@@ -2,10 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Dott;
 using DG.Tweening;
-using DG.Tweening.Core;
-using DG.Tweening.Plugins.Core.PathCore;
-using DG.Tweening.Plugins.Options;
 using UnityEditor;
 using UnityEditorInternal;
 using UnityEngine;
@@ -25,25 +23,6 @@ public class DOTweenPathPreviewProbeEditor : Editor
 
     private static readonly Dictionary<int, PreviewState> ActivePreviews = new Dictionary<int, PreviewState>();
     private static readonly List<int> TmpKeys = new List<int>();
-
-    private static bool _pathReflectionInitialized;
-    private static FieldInfo _wpsField;
-    private static FieldInfo _durationField;
-    private static FieldInfo _pathTypeField;
-    private static FieldInfo _pathModeField;
-    private static FieldInfo _isLocalField;
-    private static FieldInfo _isClosedPathField;
-    private static FieldInfo _easeTypeField;
-    private static FieldInfo _easeCurveField;
-    private static FieldInfo _loopsField;
-    private static FieldInfo _loopTypeField;
-    private static FieldInfo _idField;
-    private static FieldInfo _isSpeedBasedField;
-    private static FieldInfo _relativeField;
-    private static FieldInfo _orientTypeField;
-    private static FieldInfo _lookAtTransformField;
-    private static FieldInfo _lookAtPositionField;
-    private static FieldInfo _lookAheadField;
 
     private static bool _previewApiInitialized;
     private static bool _previewApiMissingLogged;
@@ -65,7 +44,6 @@ public class DOTweenPathPreviewProbeEditor : Editor
     private void OnEnable()
     {
         _probe = (DOTweenPathPreviewProbe)target;
-        InitializePathReflection();
         InitializePreviewApiReflection();
     }
 
@@ -290,146 +268,12 @@ public class DOTweenPathPreviewProbeEditor : Editor
 
     private static Tween CreatePathTween(DOTweenPath path)
     {
-        try
+        if (DOTweenPathTweenFactory.TryCreateTween(path, out Tween tween))
         {
-            List<Vector3> wps = GetReflectedValue(_wpsField, path, (List<Vector3>)null);
-            if (wps == null || wps.Count < 2) return null;
-
-            float duration = GetReflectedValue(_durationField, path, 1f);
-            PathType pathType = GetReflectedValue(_pathTypeField, path, PathType.CatmullRom);
-            PathMode pathMode = GetReflectedValue(_pathModeField, path, PathMode.Full3D);
-            bool isLocal = GetReflectedValue(_isLocalField, path, false);
-            bool isClosed = GetReflectedValue(_isClosedPathField, path, false);
-            Ease easeType = GetReflectedValue(_easeTypeField, path, Ease.OutQuad);
-            AnimationCurve easeCurve = GetReflectedValue(_easeCurveField, path, (AnimationCurve)null);
-            int loops = GetReflectedValue(_loopsField, path, 1);
-            LoopType loopType = GetReflectedValue(_loopTypeField, path, LoopType.Restart);
-            bool isSpeedBased = GetReflectedValue(_isSpeedBasedField, path, false);
-            bool isRelative = GetReflectedValue(_relativeField, path, false);
-            string tweenId = GetReflectedValue(_idField, path, string.Empty);
-
-            Vector3[] waypoints = wps.ToArray();
-            TweenerCore<Vector3, Path, PathOptions> tween = isLocal
-                ? path.transform.DOLocalPath(waypoints, duration, pathType, pathMode)
-                : path.transform.DOPath(waypoints, duration, pathType, pathMode);
-            if (tween == null) return null;
-
-            tween.SetOptions(isClosed)
-                .SetLoops(loops, loopType);
-
-            if (easeType == Ease.INTERNAL_Custom && easeCurve != null)
-            {
-                tween.SetEase(easeCurve);
-            }
-            else
-            {
-                tween.SetEase(easeType);
-            }
-
-            if (isSpeedBased) tween.SetSpeedBased();
-            if (isRelative) tween.SetRelative();
-            if (!string.IsNullOrEmpty(tweenId)) tween.SetId(tweenId);
-
-            ApplyLookAt(path, tween);
             return tween;
         }
-        catch (Exception e)
-        {
-            Debug.LogError("DOTweenPathPreviewProbe: error creating tween\n" + e);
-            return null;
-        }
-    }
 
-    private static void ApplyLookAt(DOTweenPath path, TweenerCore<Vector3, Path, PathOptions> tween)
-    {
-        if (_orientTypeField == null || tween == null || path == null) return;
-
-        try
-        {
-            object orientType = _orientTypeField.GetValue(path);
-            if (orientType == null) return;
-
-            string orientName = orientType.ToString();
-            if (orientName.IndexOf("None", StringComparison.OrdinalIgnoreCase) >= 0) return;
-
-            Transform lookAtTransform = GetReflectedValue(_lookAtTransformField, path, (Transform)null);
-            if (lookAtTransform != null)
-            {
-                tween.SetLookAt(lookAtTransform);
-                return;
-            }
-
-            Vector3 lookAtPosition = GetReflectedValue(_lookAtPositionField, path, Vector3.zero);
-            if (lookAtPosition != Vector3.zero)
-            {
-                tween.SetLookAt(lookAtPosition);
-                return;
-            }
-
-            float lookAhead = GetReflectedValue(_lookAheadField, path, 0.01f);
-            if (lookAhead > 0f)
-            {
-                tween.SetLookAt(lookAhead);
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    private static T GetReflectedValue<T>(FieldInfo field, object src, T fallback)
-    {
-        if (field == null || src == null) return fallback;
-        try
-        {
-            object value = field.GetValue(src);
-            if (value is T typedValue) return typedValue;
-        }
-        catch
-        {
-        }
-
-        return fallback;
-    }
-
-    private static void InitializePathReflection()
-    {
-        if (_pathReflectionInitialized) return;
-        _pathReflectionInitialized = true;
-
-        Type pathType = typeof(DOTweenPath);
-        BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-
-        _wpsField = pathType.GetField("wps", flags);
-        _durationField = pathType.GetField("duration", flags);
-        _pathTypeField = pathType.GetField("pathType", flags);
-        _pathModeField = pathType.GetField("pathMode", flags);
-        _isLocalField = pathType.GetField("isLocal", flags);
-        _isClosedPathField = pathType.GetField("isClosedPath", flags);
-        _easeTypeField = pathType.GetField("easeType", flags);
-        _easeCurveField = pathType.GetField("easeCurve", flags);
-        _loopsField = pathType.GetField("loops", flags);
-        _loopTypeField = pathType.GetField("loopType", flags);
-        _idField = pathType.GetField("id", flags);
-        _isSpeedBasedField = pathType.GetField("isSpeedBased", flags);
-        _relativeField = pathType.GetField("relative", flags);
-        _orientTypeField = pathType.GetField("orientType", flags) ?? pathType.GetField("lookAtType", flags);
-        _lookAtTransformField = pathType.GetField("lookAtTransform", flags);
-        _lookAtPositionField = pathType.GetField("lookAtPosition", flags);
-        _lookAheadField = pathType.GetField("lookAhead", flags);
-
-        Type baseType = pathType.BaseType;
-        if (baseType != null)
-        {
-            if (_durationField == null) _durationField = baseType.GetField("duration", flags);
-            if (_easeTypeField == null) _easeTypeField = baseType.GetField("easeType", flags);
-            if (_easeCurveField == null) _easeCurveField = baseType.GetField("easeCurve", flags);
-            if (_loopsField == null) _loopsField = baseType.GetField("loops", flags);
-            if (_loopTypeField == null) _loopTypeField = baseType.GetField("loopType", flags);
-            if (_idField == null) _idField = baseType.GetField("id", flags);
-            if (_isSpeedBasedField == null) _isSpeedBasedField = baseType.GetField("isSpeedBased", flags);
-            if (_relativeField == null) _relativeField = baseType.GetField("relative", flags);
-        }
+        return null;
     }
 
     private static void InitializePreviewApiReflection()
