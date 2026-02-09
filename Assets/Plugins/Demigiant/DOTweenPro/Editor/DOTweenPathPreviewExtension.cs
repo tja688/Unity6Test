@@ -1,16 +1,3 @@
-// Author: Custom Extension for DOTweenPath Editor Preview
-// Created: 2026/02/09
-// Description: Adds editor preview functionality to DOTweenPath component,
-//              similar to DOTweenAnimation's preview feature.
-//
-// USAGE:
-// 1. Add DOTweenPath component to any GameObject
-// 2. Configure your path waypoints and settings in the Inspector
-// 3. You will see a "🎬 Path Preview - Extension" panel at the bottom of the Inspector
-// 4. Click "► Play" to preview the path animation in the editor (without entering Play Mode)
-// 5. Use the Progress slider to scrub through the animation
-// 6. Click "■ Stop" to stop and reset to original position
-
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -24,22 +11,21 @@ using UnityEngine;
 
 namespace DG.DOTweenEditor
 {
-    /// <summary>
-    /// Extension class that adds editor preview functionality to DOTweenPath
-    /// </summary>
-    [CustomEditor(typeof(DOTweenPath))]
-    [CanEditMultipleObjects]
-    public class DOTweenPathPreviewExtension : Editor
+    [InitializeOnLoad]
+    internal static class DOTweenPathPreviewExtension
     {
-        // Preview state management
-        private static readonly Dictionary<DOTweenPath, PathPreviewInfo> _PathToPreview = new Dictionary<DOTweenPath, PathPreviewInfo>();
-        private static readonly List<DOTweenPath> _TmpKeys = new List<DOTweenPath>();
+        private sealed class PathPreviewInfo
+        {
+            public DOTweenPath path;
+            public Tween tween;
+            public Vector3 originalLocalPosition;
+            public Quaternion originalLocalRotation;
+            public float progress;
+        }
 
-        private DOTweenPath _src;
-        private Editor _defaultEditor;
-        private Type _defaultEditorType;
+        private static readonly Dictionary<int, PathPreviewInfo> PathToPreview = new Dictionary<int, PathPreviewInfo>();
+        private static readonly List<int> TmpKeys = new List<int>();
 
-        // Cached reflection info
         private static bool _reflectionInitialized;
         private static FieldInfo _wpsField;
         private static FieldInfo _durationField;
@@ -52,121 +38,84 @@ namespace DG.DOTweenEditor
         private static FieldInfo _loopTypeField;
         private static FieldInfo _idField;
         private static FieldInfo _lookAtTypeField;
+        private static FieldInfo _lookAtTransformField;
+        private static FieldInfo _lookAtPositionField;
         private static FieldInfo _lookAheadField;
 
-        // Styles
         private static bool _stylesInitialized;
         private static GUIStyle _previewBox;
         private static GUIStyle _previewLabel;
-        private static GUIStyle _btPreview;
+        private static GUIStyle _previewButton;
         private static GUIStyle _statusLabel;
 
-        #region Unity Methods
-
-        void OnEnable()
+        static DOTweenPathPreviewExtension()
         {
-            _src = target as DOTweenPath;
-
-            // Initialize reflection
-            if (!_reflectionInitialized)
-            {
-                InitializeReflection();
-            }
-
-            // Try to get the default DOTweenPathInspector
-            TryCreateDefaultEditor();
+            InitializeReflection();
+            Editor.finishedDefaultHeaderGUI += OnFinishedDefaultHeaderGUI;
+            EditorApplication.playModeStateChanged += OnPlayModeChanged;
+            AssemblyReloadEvents.beforeAssemblyReload += StopAllPreviews;
         }
 
-        void OnDisable()
+        private static void OnFinishedDefaultHeaderGUI(Editor editor)
         {
-            StopAllPreviews();
+            if (Application.isPlaying) return;
+            if (editor == null) return;
 
-            if (_defaultEditor != null)
-            {
-                DestroyImmediate(_defaultEditor);
-                _defaultEditor = null;
-            }
-        }
+            DOTweenPath src = editor.target as DOTweenPath;
+            if (src == null) return;
 
-        public override void OnInspectorGUI()
-        {
-            // Draw the default DOTweenPath inspector first
-            if (_defaultEditor != null)
-            {
-                _defaultEditor.OnInspectorGUI();
-            }
-            else
-            {
-                // Fallback: draw default inspector
-                DrawDefaultInspector();
-            }
-
-            // Add our preview controls
-            if (!Application.isPlaying)
-            {
-                GUILayout.Space(10);
-                DrawPreviewPanel();
-            }
-        }
-
-        #endregion
-
-        #region Preview Panel GUI
-
-        private void DrawPreviewPanel()
-        {
             InitStyles();
+            DrawPreviewPanel(src, editor.targets.Length > 1);
+        }
 
-            bool isPreviewing = _PathToPreview.Count > 0;
-            bool isPreviewingThis = isPreviewing && _PathToPreview.ContainsKey(_src);
+        private static void DrawPreviewPanel(DOTweenPath src, bool hasMultiSelection)
+        {
+            int id = src.GetInstanceID();
+            bool isPreviewingAny = PathToPreview.Count > 0;
+            bool isPreviewingThis = PathToPreview.ContainsKey(id);
 
-            // Preview panel background
-            GUI.backgroundColor = isPreviewing
-                ? new Color(0.3f, 0.7f, 0.5f)
-                : new Color(0.2f, 0.2f, 0.2f);
+            Color prevBackground = GUI.backgroundColor;
+            GUI.backgroundColor = isPreviewingAny
+                ? new Color(0.30f, 0.70f, 0.50f)
+                : new Color(0.20f, 0.20f, 0.20f);
 
+            GUILayout.Space(6);
             GUILayout.BeginVertical(_previewBox);
-            GUI.backgroundColor = Color.white;
+            GUI.backgroundColor = prevBackground;
 
-            // Title
+            GUILayout.Label("Path Preview", _previewLabel);
+            GUILayout.Space(2);
+
+            if (hasMultiSelection)
+            {
+                EditorGUILayout.HelpBox("Preview supports one DOTweenPath at a time. Use single selection for controls.", MessageType.Info);
+            }
+
             GUILayout.BeginHorizontal();
-            GUILayout.Label("🎬 Path Preview - Extension", _previewLabel);
-            GUILayout.FlexibleSpace();
+            EditorGUI.BeginDisabledGroup(isPreviewingThis || hasMultiSelection);
+            if (GUILayout.Button("Play", _previewButton))
+            {
+                StartPreview(src);
+            }
+            EditorGUI.EndDisabledGroup();
+
+            EditorGUI.BeginDisabledGroup(!isPreviewingThis || hasMultiSelection);
+            if (GUILayout.Button("Pause", _previewButton))
+            {
+                PausePreview(src);
+            }
+            EditorGUI.EndDisabledGroup();
+
+            EditorGUI.BeginDisabledGroup(!isPreviewingThis || hasMultiSelection);
+            if (GUILayout.Button("Stop", _previewButton))
+            {
+                StopPreview(src);
+            }
+            EditorGUI.EndDisabledGroup();
             GUILayout.EndHorizontal();
 
-            GUILayout.Space(4);
-
-            // Preview controls - Play buttons
-            GUILayout.BeginHorizontal();
-
-            EditorGUI.BeginDisabledGroup(isPreviewingThis);
-            if (GUILayout.Button("► Play", _btPreview))
+            if (isPreviewingThis && PathToPreview.TryGetValue(id, out PathPreviewInfo info))
             {
-                StartPreview(_src);
-            }
-            EditorGUI.EndDisabledGroup();
-
-            EditorGUI.BeginDisabledGroup(!isPreviewingThis);
-            if (GUILayout.Button("❚❚ Pause", _btPreview))
-            {
-                PausePreview(_src);
-            }
-            EditorGUI.EndDisabledGroup();
-
-            EditorGUI.BeginDisabledGroup(!isPreviewingThis);
-            if (GUILayout.Button("■ Stop", _btPreview))
-            {
-                StopPreview(_src);
-            }
-            EditorGUI.EndDisabledGroup();
-
-            GUILayout.EndHorizontal();
-
-            // Progress slider
-            if (isPreviewingThis && _PathToPreview.TryGetValue(_src, out PathPreviewInfo info))
-            {
-                GUILayout.Space(4);
-
                 EditorGUI.BeginChangeCheck();
                 float newProgress = EditorGUILayout.Slider("Progress", info.progress, 0f, 1f);
                 if (EditorGUI.EndChangeCheck() && info.tween != null && info.tween.IsActive())
@@ -175,16 +124,14 @@ namespace DG.DOTweenEditor
                     info.progress = newProgress;
                 }
 
-                // Status
-                string status = info.tween != null && info.tween.IsPlaying() ? "▶ Playing..." : "❚❚ Paused";
-                GUILayout.Label($"Status: {status}", _statusLabel);
+                string status = (info.tween != null && info.tween.IsPlaying()) ? "Playing" : "Paused";
+                GUILayout.Label("Status: " + status, _statusLabel);
             }
 
-            // Stop all button
-            if (isPreviewing)
+            if (isPreviewingAny)
             {
-                GUILayout.Space(4);
-                if (GUILayout.Button("■ Stop All Previews", _btPreview))
+                GUILayout.Space(2);
+                if (GUILayout.Button("Stop All Previews", _previewButton))
                 {
                     StopAllPreviews();
                 }
@@ -193,183 +140,152 @@ namespace DG.DOTweenEditor
             GUILayout.EndVertical();
         }
 
-        #endregion
-
-        #region Preview Methods
-
-        private void StartPreview(DOTweenPath src)
+        private static void StartPreview(DOTweenPath src)
         {
             if (src == null) return;
 
-            // Stop existing preview for this path
-            if (_PathToPreview.ContainsKey(src))
-            {
-                StopPreview(src);
-            }
+            StopPreview(src);
 
-            // Start editor preview system
-            DOTweenEditorPreview.Start(OnPreviewUpdated);
-
-            // Subscribe to play mode changes
-#if UNITY_2017_2_OR_NEWER
-            EditorApplication.playModeStateChanged -= OnPlayModeChanged;
-            EditorApplication.playModeStateChanged += OnPlayModeChanged;
-#endif
-
-            // Create the path tween
             Tween tween = CreatePathTween(src);
-
             if (tween == null)
             {
-                Debug.LogWarning("DOTweenPath Preview: Failed to create tween. Make sure the path has at least 2 waypoints.");
+                Debug.LogWarning("DOTweenPath Preview: Failed to create preview tween. Make sure path has at least 2 waypoints.");
                 return;
             }
 
-            // Store original position/rotation for reset
-            var pathInfo = new PathPreviewInfo
+            if (PathToPreview.Count == 0)
+            {
+                DOTweenEditorPreview.Start(OnPreviewUpdated);
+            }
+
+            var info = new PathPreviewInfo
             {
                 path = src,
                 tween = tween,
-                originalPosition = src.transform.position,
-                originalRotation = src.transform.rotation,
                 originalLocalPosition = src.transform.localPosition,
                 originalLocalRotation = src.transform.localRotation,
                 progress = 0f
             };
+            PathToPreview[src.GetInstanceID()] = info;
 
-            _PathToPreview[src] = pathInfo;
-
-            // Prepare tween for preview
             DOTweenEditorPreview.PrepareTweenForPreview(tween, true, true, true);
+            InternalEditorUtility.RepaintAllViews();
         }
 
-        private Tween CreatePathTween(DOTweenPath src)
+        private static Tween CreatePathTween(DOTweenPath src)
         {
             try
             {
-                // Get waypoints via reflection
-                List<Vector3> wps = null;
-                if (_wpsField != null)
-                {
-                    wps = _wpsField.GetValue(src) as List<Vector3>;
-                }
+                List<Vector3> wps = _wpsField != null ? _wpsField.GetValue(src) as List<Vector3> : null;
+                if (wps == null || wps.Count < 2) return null;
 
-                if (wps == null || wps.Count < 2)
-                {
-                    Debug.LogWarning("DOTweenPath Preview: Path needs at least 2 waypoints. Please add waypoints to the path first.");
-                    return null;
-                }
+                float duration = GetReflectedValue(_durationField, src, 1f);
+                PathType pathType = GetReflectedValue(_pathTypeField, src, PathType.CatmullRom);
+                PathMode pathMode = GetReflectedValue(_pathModeField, src, PathMode.Full3D);
+                bool isLocal = GetReflectedValue(_isLocalField, src, false);
+                bool isClosedPath = GetReflectedValue(_isClosedPathField, src, false);
+                Ease easeType = GetReflectedValue(_easeTypeField, src, Ease.OutQuad);
+                int loops = GetReflectedValue(_loopsField, src, 1);
+                LoopType loopType = GetReflectedValue(_loopTypeField, src, LoopType.Restart);
+                string tweenId = GetReflectedValue(_idField, src, string.Empty);
 
-                // Get settings via reflection with fallbacks
-                float duration = GetReflectedValue<float>(_durationField, src, 1f);
-                PathType pathTypeValue = GetReflectedValue<PathType>(_pathTypeField, src, PathType.CatmullRom);
-                PathMode pathModeValue = GetReflectedValue<PathMode>(_pathModeField, src, PathMode.Full3D);
-                bool isLocal = GetReflectedValue<bool>(_isLocalField, src, false);
-                bool isClosedPath = GetReflectedValue<bool>(_isClosedPathField, src, false);
-                Ease easeType = GetReflectedValue<Ease>(_easeTypeField, src, Ease.OutQuad);
-                int loops = GetReflectedValue<int>(_loopsField, src, 1);
-                LoopType loopType = GetReflectedValue<LoopType>(_loopTypeField, src, LoopType.Restart);
-                string id = GetReflectedValue<string>(_idField, src, "");
-
-                // Convert waypoints to array
                 Vector3[] waypoints = wps.ToArray();
-
-                // Create the path tween
-                TweenerCore<Vector3, Path, PathOptions> tween;
-
-                if (isLocal)
-                {
-                    tween = src.transform.DOLocalPath(waypoints, duration, pathTypeValue, pathModeValue);
-                }
-                else
-                {
-                    tween = src.transform.DOPath(waypoints, duration, pathTypeValue, pathModeValue);
-                }
-
+                TweenerCore<Vector3, Path, PathOptions> tween = isLocal
+                    ? src.transform.DOLocalPath(waypoints, duration, pathType, pathMode)
+                    : src.transform.DOPath(waypoints, duration, pathType, pathMode);
                 if (tween == null) return null;
 
-                // Apply path settings
                 tween.SetOptions(isClosedPath)
-                     .SetEase(easeType)
-                     .SetLoops(loops, loopType);
+                    .SetEase(easeType)
+                    .SetLoops(loops, loopType);
 
-                // Handle LookAt
-                if (_lookAtTypeField != null)
-                {
-                    try
-                    {
-                        var lookAtValue = _lookAtTypeField.GetValue(src);
-                        if (lookAtValue != null && lookAtValue.ToString().Contains("Ahead"))
-                        {
-                            float lookAhead = GetReflectedValue<float>(_lookAheadField, src, 0.01f);
-                            tween.SetLookAt(lookAhead);
-                        }
-                    }
-                    catch { /* Ignore LookAt errors */ }
-                }
+                ApplyLookAtSettings(src, tween);
 
-                if (!string.IsNullOrEmpty(id))
+                if (!string.IsNullOrEmpty(tweenId))
                 {
-                    tween.SetId(id);
+                    tween.SetId(tweenId);
                 }
 
                 return tween;
             }
             catch (Exception e)
             {
-                Debug.LogError($"DOTweenPath Preview: Error creating tween: {e.Message}\n{e.StackTrace}");
+                Debug.LogError("DOTweenPath Preview: Error creating tween\n" + e);
                 return null;
             }
         }
 
-        private T GetReflectedValue<T>(FieldInfo field, object obj, T defaultValue)
+        private static void ApplyLookAtSettings(DOTweenPath src, TweenerCore<Vector3, Path, PathOptions> tween)
         {
-            if (field == null) return defaultValue;
+            if (_lookAtTypeField == null) return;
 
             try
             {
-                object value = field.GetValue(obj);
-                if (value is T typedValue)
+                object lookAtType = _lookAtTypeField.GetValue(src);
+                if (lookAtType == null) return;
+
+                string name = lookAtType.ToString();
+                if (name.IndexOf("Ahead", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    return typedValue;
+                    float lookAhead = GetReflectedValue(_lookAheadField, src, 0.01f);
+                    tween.SetLookAt(lookAhead);
+                    return;
+                }
+
+                if (name.IndexOf("Transform", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    Transform lookAtTransform = GetReflectedValue(_lookAtTransformField, src, (Transform)null);
+                    if (lookAtTransform != null) tween.SetLookAt(lookAtTransform);
+                    return;
+                }
+
+                if (name.IndexOf("Position", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    Vector3 lookAtPosition = GetReflectedValue(_lookAtPositionField, src, Vector3.zero);
+                    tween.SetLookAt(lookAtPosition);
                 }
             }
-            catch { }
+            catch
+            {
+            }
+        }
+
+        private static T GetReflectedValue<T>(FieldInfo field, object instance, T defaultValue)
+        {
+            if (field == null || instance == null) return defaultValue;
+
+            try
+            {
+                object value = field.GetValue(instance);
+                if (value is T typed) return typed;
+            }
+            catch
+            {
+            }
 
             return defaultValue;
         }
 
-        private void PausePreview(DOTweenPath src)
+        private static void PausePreview(DOTweenPath src)
         {
-            if (!_PathToPreview.TryGetValue(src, out PathPreviewInfo info)) return;
+            if (src == null) return;
+            if (!PathToPreview.TryGetValue(src.GetInstanceID(), out PathPreviewInfo info)) return;
+            if (info.tween == null || !info.tween.IsActive()) return;
 
-            if (info.tween != null && info.tween.IsActive())
-            {
-                info.tween.TogglePause();
-            }
+            info.tween.TogglePause();
+            InternalEditorUtility.RepaintAllViews();
         }
 
-        private void StopPreview(DOTweenPath src)
+        private static void StopPreview(DOTweenPath src)
         {
-            if (!_PathToPreview.TryGetValue(src, out PathPreviewInfo info)) return;
+            if (src == null) return;
+            int id = src.GetInstanceID();
+            if (!PathToPreview.TryGetValue(id, out PathPreviewInfo info)) return;
 
-            // Kill the tween
-            if (info.tween != null && info.tween.IsActive())
-            {
-                info.tween.Kill();
-            }
+            StopPreviewInternal(info);
+            PathToPreview.Remove(id);
 
-            // Restore original transform
-            if (info.path != null)
-            {
-                info.path.transform.localPosition = info.originalLocalPosition;
-                info.path.transform.localRotation = info.originalLocalRotation;
-                EditorUtility.SetDirty(info.path);
-            }
-
-            _PathToPreview.Remove(src);
-
-            if (_PathToPreview.Count == 0)
+            if (PathToPreview.Count == 0)
             {
                 CleanupPreviewSystem();
             }
@@ -377,141 +293,108 @@ namespace DG.DOTweenEditor
             InternalEditorUtility.RepaintAllViews();
         }
 
-        private static void StopAllPreviews()
+        private static void StopPreviewInternal(PathPreviewInfo info)
         {
-            _TmpKeys.Clear();
-            foreach (var kvp in _PathToPreview)
+            if (info == null) return;
+
+            if (info.tween != null && info.tween.IsActive())
             {
-                _TmpKeys.Add(kvp.Key);
+                info.tween.Kill();
             }
 
-            foreach (var key in _TmpKeys)
+            if (info.path != null)
             {
-                if (_PathToPreview.TryGetValue(key, out PathPreviewInfo info))
-                {
-                    if (info.tween != null && info.tween.IsActive())
-                    {
-                        info.tween.Kill();
-                    }
+                info.path.transform.localPosition = info.originalLocalPosition;
+                info.path.transform.localRotation = info.originalLocalRotation;
+                EditorUtility.SetDirty(info.path);
+            }
+        }
 
-                    if (info.path != null)
-                    {
-                        info.path.transform.localPosition = info.originalLocalPosition;
-                        info.path.transform.localRotation = info.originalLocalRotation;
-                        EditorUtility.SetDirty(info.path);
-                    }
+        private static void StopAllPreviews()
+        {
+            if (PathToPreview.Count == 0)
+            {
+                CleanupPreviewSystem();
+                return;
+            }
+
+            TmpKeys.Clear();
+            foreach (int id in PathToPreview.Keys)
+            {
+                TmpKeys.Add(id);
+            }
+
+            foreach (int id in TmpKeys)
+            {
+                if (PathToPreview.TryGetValue(id, out PathPreviewInfo info))
+                {
+                    StopPreviewInternal(info);
                 }
             }
 
-            _TmpKeys.Clear();
-            _PathToPreview.Clear();
-
+            TmpKeys.Clear();
+            PathToPreview.Clear();
             CleanupPreviewSystem();
+            InternalEditorUtility.RepaintAllViews();
+        }
+
+        private static void OnPreviewUpdated()
+        {
+            if (PathToPreview.Count == 0) return;
+
+            foreach (KeyValuePair<int, PathPreviewInfo> kvp in PathToPreview)
+            {
+                PathPreviewInfo info = kvp.Value;
+                if (info.tween != null && info.tween.IsActive())
+                {
+                    info.progress = info.tween.ElapsedPercentage();
+                }
+            }
+
             InternalEditorUtility.RepaintAllViews();
         }
 
         private static void CleanupPreviewSystem()
         {
             DOTweenEditorPreview.Stop(true, true);
-
-#if UNITY_2017_2_OR_NEWER
-            EditorApplication.playModeStateChanged -= OnPlayModeChanged;
-#endif
         }
 
-#if UNITY_2017_2_OR_NEWER
         private static void OnPlayModeChanged(PlayModeStateChange state)
         {
             StopAllPreviews();
         }
-#endif
-
-        private static void OnPreviewUpdated()
-        {
-            // Update progress for all previewing paths
-            foreach (var kvp in _PathToPreview)
-            {
-                var info = kvp.Value;
-                if (info.tween != null && info.tween.IsActive())
-                {
-                    info.progress = info.tween.ElapsedPercentage();
-                }
-            }
-        }
-
-        #endregion
-
-        #region Initialization
 
         private static void InitializeReflection()
         {
+            if (_reflectionInitialized) return;
             _reflectionInitialized = true;
 
-            try
+            Type pathType = typeof(DOTweenPath);
+            BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            _wpsField = pathType.GetField("wps", flags);
+            _durationField = pathType.GetField("duration", flags);
+            _pathTypeField = pathType.GetField("pathType", flags);
+            _pathModeField = pathType.GetField("pathMode", flags);
+            _isLocalField = pathType.GetField("isLocal", flags);
+            _isClosedPathField = pathType.GetField("isClosedPath", flags);
+            _easeTypeField = pathType.GetField("easeType", flags);
+            _loopsField = pathType.GetField("loops", flags);
+            _loopTypeField = pathType.GetField("loopType", flags);
+            _idField = pathType.GetField("id", flags);
+            _lookAtTypeField = pathType.GetField("lookAtType", flags);
+            _lookAtTransformField = pathType.GetField("lookAtTransform", flags);
+            _lookAtPositionField = pathType.GetField("lookAtPosition", flags);
+            _lookAheadField = pathType.GetField("lookAhead", flags);
+
+            Type baseType = pathType.BaseType;
+            if (baseType != null)
             {
-                Type pathType = typeof(DOTweenPath);
-                BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-
-                _wpsField = pathType.GetField("wps", flags);
-                _durationField = pathType.GetField("duration", flags);
-                _pathTypeField = pathType.GetField("pathType", flags);
-                _pathModeField = pathType.GetField("pathMode", flags);
-                _isLocalField = pathType.GetField("isLocal", flags);
-                _isClosedPathField = pathType.GetField("isClosedPath", flags);
-                _easeTypeField = pathType.GetField("easeType", flags);
-                _loopsField = pathType.GetField("loops", flags);
-                _loopTypeField = pathType.GetField("loopType", flags);
-                _idField = pathType.GetField("id", flags);
-                _lookAtTypeField = pathType.GetField("lookAtType", flags);
-                _lookAheadField = pathType.GetField("lookAhead", flags);
-
-                // Also try base class for some fields
-                Type baseType = pathType.BaseType;
-                if (baseType != null)
-                {
-                    if (_durationField == null) _durationField = baseType.GetField("duration", flags);
-                    if (_easeTypeField == null) _easeTypeField = baseType.GetField("easeType", flags);
-                    if (_loopsField == null) _loopsField = baseType.GetField("loops", flags);
-                    if (_loopTypeField == null) _loopTypeField = baseType.GetField("loopType", flags);
-                    if (_idField == null) _idField = baseType.GetField("id", flags);
-                }
-
-                // Debug log available fields
-                if (_wpsField == null)
-                {
-                    Debug.LogWarning("DOTweenPath Preview: Could not find 'wps' field. Preview may not work correctly.");
-                }
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"DOTweenPath Preview: Reflection initialization failed: {e.Message}");
-            }
-        }
-
-        private void TryCreateDefaultEditor()
-        {
-            try
-            {
-                // Find DOTweenPathInspector type in all assemblies
-                var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-                foreach (var assembly in assemblies)
-                {
-                    try
-                    {
-                        _defaultEditorType = assembly.GetType("DG.DOTweenEditor.DOTweenPathInspector");
-                        if (_defaultEditorType != null) break;
-                    }
-                    catch { /* Continue searching */ }
-                }
-
-                if (_defaultEditorType != null)
-                {
-                    _defaultEditor = CreateEditor(targets, _defaultEditorType);
-                }
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"DOTweenPath Preview: Could not create default editor: {e.Message}");
+                if (_durationField == null) _durationField = baseType.GetField("duration", flags);
+                if (_easeTypeField == null) _easeTypeField = baseType.GetField("easeType", flags);
+                if (_loopsField == null) _loopsField = baseType.GetField("loops", flags);
+                if (_loopTypeField == null) _loopTypeField = baseType.GetField("loopType", flags);
+                if (_idField == null) _idField = baseType.GetField("id", flags);
             }
         }
 
@@ -523,41 +406,20 @@ namespace DG.DOTweenEditor
             _previewBox = new GUIStyle(GUI.skin.box)
             {
                 padding = new RectOffset(8, 8, 8, 8),
-                margin = new RectOffset(0, 0, 4, 4)
+                margin = new RectOffset(0, 0, 3, 4)
             };
-
             _previewLabel = new GUIStyle(EditorStyles.boldLabel)
             {
-                fontSize = 12
+                fontSize = 11
             };
-
-            _btPreview = new GUIStyle(EditorStyles.miniButton)
+            _previewButton = new GUIStyle(EditorStyles.miniButton)
             {
-                fixedHeight = 22,
-                richText = true
+                fixedHeight = 21
             };
-
             _statusLabel = new GUIStyle(EditorStyles.miniLabel)
             {
                 fontStyle = FontStyle.Italic
             };
         }
-
-        #endregion
-
-        #region Helper Classes
-
-        private class PathPreviewInfo
-        {
-            public DOTweenPath path;
-            public Tween tween;
-            public Vector3 originalPosition;
-            public Quaternion originalRotation;
-            public Vector3 originalLocalPosition;
-            public Quaternion originalLocalRotation;
-            public float progress;
-        }
-
-        #endregion
     }
 }

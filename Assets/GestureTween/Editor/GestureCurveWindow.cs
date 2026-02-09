@@ -249,22 +249,9 @@ namespace GestureTween.Editor
         {
             if (!_sceneDrawingEnabled) return;
 
-            DrawSceneOverlay();
             DrawStrokeInScene();
             DrawGeneratedPathInScene();
             HandleSceneInput(sceneView);
-        }
-
-        private void DrawSceneOverlay()
-        {
-            Handles.BeginGUI();
-            GUILayout.BeginArea(new Rect(12f, 12f, 410f, 96f), "GestureTween", "Window");
-            GUILayout.Label($"通道: {_activeChannel}");
-            GUILayout.Label(_isDrawing ? "录制中..." : "待命");
-            GUILayout.Label(_requireShiftToDraw ? "操作: Shift + 鼠标左键拖拽" : "操作: 鼠标左键拖拽");
-            GUILayout.Label("Esc 可取消当前录制");
-            GUILayout.EndArea();
-            Handles.EndGUI();
         }
 
         private void DrawStrokeInScene()
