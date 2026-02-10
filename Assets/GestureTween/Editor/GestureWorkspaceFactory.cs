@@ -44,26 +44,23 @@ namespace GestureTween.Editor
                 workspace = Undo.AddComponent<GestureWorkspace>(workspaceObject);
             }
 
+            // Clean up legacy missing components left by removed scale/rotation tracks.
+            GameObjectUtility.RemoveMonoBehavioursWithMissingScript(workspace.gameObject);
+
             DOTweenTimeline timeline = workspace.GetComponent<DOTweenTimeline>() ?? Undo.AddComponent<DOTweenTimeline>(workspace.gameObject);
             GesturePathTrack pathTrack = workspace.GetComponent<GesturePathTrack>() ?? Undo.AddComponent<GesturePathTrack>(workspace.gameObject);
-            GestureScaleTrack scaleTrack = workspace.GetComponent<GestureScaleTrack>() ?? Undo.AddComponent<GestureScaleTrack>(workspace.gameObject);
-            GestureRotationTrack rotationTrack = workspace.GetComponent<GestureRotationTrack>() ?? Undo.AddComponent<GestureRotationTrack>(workspace.gameObject);
 
             Undo.RecordObject(workspace, "Configure Gesture Workspace");
             workspace.RootTarget = root;
-            workspace.SetReferences(timeline, pathTrack, scaleTrack, rotationTrack);
+            workspace.SetReferences(timeline, pathTrack);
             workspace.BindRootToTracks();
 
             EditorUtility.SetDirty(workspace);
             EditorUtility.SetDirty(timeline);
             EditorUtility.SetDirty(pathTrack);
-            EditorUtility.SetDirty(scaleTrack);
-            EditorUtility.SetDirty(rotationTrack);
             PrefabUtility.RecordPrefabInstancePropertyModifications(workspace);
             PrefabUtility.RecordPrefabInstancePropertyModifications(timeline);
             PrefabUtility.RecordPrefabInstancePropertyModifications(pathTrack);
-            PrefabUtility.RecordPrefabInstancePropertyModifications(scaleTrack);
-            PrefabUtility.RecordPrefabInstancePropertyModifications(rotationTrack);
 
             if (selectWorkspace)
             {

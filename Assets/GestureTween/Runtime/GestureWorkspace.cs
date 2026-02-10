@@ -9,8 +9,6 @@ namespace GestureTween
         [SerializeField] private Transform rootTarget;
         [SerializeField] private DOTweenTimeline timeline;
         [SerializeField] private GesturePathTrack pathTrack;
-        [SerializeField] private GestureScaleTrack scaleTrack;
-        [SerializeField] private GestureRotationTrack rotationTrack;
 
         public Transform RootTarget
         {
@@ -25,19 +23,11 @@ namespace GestureTween
         public Transform ResolvedRootTarget => rootTarget != null ? rootTarget : transform.parent;
         public DOTweenTimeline Timeline => timeline;
         public GesturePathTrack PathTrack => pathTrack;
-        public GestureScaleTrack ScaleTrack => scaleTrack;
-        public GestureRotationTrack RotationTrack => rotationTrack;
 
-        public void SetReferences(
-            DOTweenTimeline timelineComponent,
-            GesturePathTrack path,
-            GestureScaleTrack scale,
-            GestureRotationTrack rotation)
+        public void SetReferences(DOTweenTimeline timelineComponent, GesturePathTrack path)
         {
             timeline = timelineComponent;
             pathTrack = path;
-            scaleTrack = scale;
-            rotationTrack = rotation;
             BindRootToTracks();
         }
 
@@ -50,8 +40,6 @@ namespace GestureTween
             }
 
             pathTrack?.SetTargetIfAuto(resolved);
-            scaleTrack?.SetTargetIfAuto(resolved);
-            rotationTrack?.SetTargetIfAuto(resolved);
         }
 
         private void Reset()
@@ -63,8 +51,6 @@ namespace GestureTween
         {
             timeline = timeline != null ? timeline : GetComponent<DOTweenTimeline>();
             pathTrack = pathTrack != null ? pathTrack : GetComponent<GesturePathTrack>();
-            scaleTrack = scaleTrack != null ? scaleTrack : GetComponent<GestureScaleTrack>();
-            rotationTrack = rotationTrack != null ? rotationTrack : GetComponent<GestureRotationTrack>();
 
             if (rootTarget == null && transform.parent != null)
             {

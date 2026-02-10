@@ -12,14 +12,6 @@ namespace GestureTween.Editor
 {
     public class GestureCurveWindow : EditorWindow
     {
-        private enum WorkbenchMode
-        {
-            Global,
-            Path,
-            Scale,
-            Rotation
-        }
-
         private enum DrawPlane
         {
             XY,
@@ -37,27 +29,24 @@ namespace GestureTween.Editor
 
         private const string PreviewSpeedPrefKey = "Dott.PreviewSpeed";
         private const float MinDuration = 0.05f;
-        private const float KeyMergeThreshold = 0.02f;
+        private const int MaxBezierResamplePoints = 320;
 
-        private readonly List<StrokeSample> _samples = new();
+        private readonly List<StrokeSample> _strokeSamples = new();
+        private readonly List<StrokeSample> _lastStrokeSamples = new();
+        private readonly List<Vector3> _liveStrokePath = new();
         private readonly List<Vector3> _pathLocalOffsets = new();
+        private readonly Stack<List<Vector3>> _postProcessUndoStack = new();
+
+        private List<Vector3> _lastStrokeBaselineOffsets = new();
 
         private Transform _rootTarget;
         private GestureWorkspace _workspace;
         private DOTweenTimeline _timeline;
         private GesturePathTrack _pathTrack;
-        private GestureScaleTrack _scaleTrack;
-        private GestureRotationTrack _rotationTrack;
 
-        private WorkbenchMode _mode = WorkbenchMode.Path;
-        private DrawPlane _drawPlane = DrawPlane.XY;
-
-        private bool _autoCreateWorkspace = true;
         private bool _sceneEditingEnabled = true;
         private bool _requireShiftToDraw = true;
-        private bool _showSceneModePanel = true;
-        private bool _scenePanelFoldout = true;
-        private bool _dynamicEditWhilePlaying = true;
+        private DrawPlane _drawPlane = DrawPlane.XY;
         private bool _isDrawing;
         private bool _pathUseLocalSpace = true;
 
@@ -66,14 +55,32 @@ namespace GestureTween.Editor
         private float _previewTimeNormalized;
         private float _timelineDuration = 1f;
 
-        private float _smoothing = 0.35f;
-        private float _pathSimplifyTolerance = 0.03f;
         private float _minSampleDistance = 0.02f;
         private float _minSampleInterval = 0.01f;
+        private float _captureSmoothingStrength = 0.25f;
+        private int _captureSmoothingPasses = 1;
+        private float _captureSimplifyAmount = 0.2f;
+        private bool _autoBezierOnStroke = true;
+        private float _autoBezierAmount = 0.35f;
+        private float _autoBezierDensity = 1f;
 
-        private float _handleSizeMultiplier = 0.9f;
-        private float _scaleHandleSensitivity = 1f;
-        private float _rotationHandleSensitivity = 90f;
+        private float _postSmoothStrength = 0.45f;
+        private int _postSmoothPasses = 2;
+        private float _postBezierAmount = 0.5f;
+        private float _postBezierDensity = 1f;
+        private float _easeIntentStrength = 0.7f;
+        private float _easeJitterSuppression = 0.65f;
+        private float _easeKeyReduction = 0.45f;
+
+        private bool _ghostFollowEnabled = true;
+        private float _ghostAlpha = 0.24f;
+        private float _ghostFollowSmoothTime = 0.06f;
+        private bool _strokeStartedWithShift;
+        private bool _ghostActive;
+        private Vector3 _ghostWorldPosition;
+        private Vector3 _ghostTargetWorldPosition;
+        private Vector3 _ghostVelocity;
+        private Material _ghostMaterial;
 
         private DottController _previewController;
         private IDOTweenAnimation[] _previewAnimations = Array.Empty<IDOTweenAnimation>();
@@ -88,9 +95,7 @@ namespace GestureTween.Editor
         private bool HasWorkspaceReady =>
             _workspace != null &&
             _timeline != null &&
-            _pathTrack != null &&
-            _scaleTrack != null &&
-            _rotationTrack != null;
+            _pathTrack != null;
 
         private void OnEnable()
         {
@@ -116,6 +121,8 @@ namespace GestureTween.Editor
 
             _previewController?.Dispose();
             _previewController = null;
+
+            ReleaseGhostMaterial();
         }
 
         private void OnSelectionChanged()
@@ -131,21 +138,21 @@ namespace GestureTween.Editor
         private void OnGUI()
         {
             EditorGUILayout.Space(8f);
-            EditorGUILayout.LabelField("GestureTween Workbench", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("GestureTween Path Workbench", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "工作流：选择根节点 -> 自动创建工作区驱动器 -> 在 Path/Scale/Rotation 模式里制作并调试通道。",
+                "专注快速路径手绘。旋转/缩放请直接使用 DOTween Animation + Timeline 原生能力。",
                 MessageType.Info);
 
             DrawWorkspaceSection();
             EditorGUILayout.Space(6f);
 
-            DrawModeToolbar();
-            EditorGUILayout.Space(6f);
-
             DrawPreviewSection();
             EditorGUILayout.Space(6f);
 
-            DrawModeInspector();
+            DrawPathToolSection();
+            EditorGUILayout.Space(6f);
+
+            DrawPostProcessSection();
             EditorGUILayout.Space(8f);
 
             DrawPersistSection();
@@ -167,27 +174,26 @@ namespace GestureTween.Editor
                 EnsureWorkspaceIfNeeded(forceCreate: false);
             }
 
-            _autoCreateWorkspace = EditorGUILayout.ToggleLeft("自动创建/修复工作区", _autoCreateWorkspace);
-
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("创建/修复工作区"))
             {
                 EnsureWorkspaceIfNeeded(forceCreate: true);
             }
 
-            EditorGUI.BeginDisabledGroup(_workspace == null);
-            if (GUILayout.Button("定位工作区"))
+            using (new EditorGUI.DisabledScope(_workspace == null))
             {
-                Selection.activeTransform = _workspace.transform;
-                EditorGUIUtility.PingObject(_workspace.gameObject);
+                if (GUILayout.Button("定位工作区"))
+                {
+                    Selection.activeTransform = _workspace.transform;
+                    EditorGUIUtility.PingObject(_workspace.gameObject);
+                }
             }
 
-            EditorGUI.EndDisabledGroup();
             EditorGUILayout.EndHorizontal();
 
             if (_workspace == null)
             {
-                EditorGUILayout.HelpBox("当前没有可用工作区。创建后会自动挂载 DOTweenTimeline + Path/Scale/Rotation 通道。", MessageType.Warning);
+                EditorGUILayout.HelpBox("当前没有可用工作区。创建后会自动挂载 DOTweenTimeline + Path 通道。", MessageType.Warning);
                 return;
             }
 
@@ -195,11 +201,6 @@ namespace GestureTween.Editor
             string timelineName = _timeline != null ? _timeline.GetType().Name : "Missing";
             EditorGUILayout.LabelField("工作区", workspaceName);
             EditorGUILayout.LabelField("基础组件", timelineName);
-        }
-
-        private void DrawModeToolbar()
-        {
-            _mode = (WorkbenchMode)GUILayout.Toolbar((int)_mode, new[] { "全局", "路径", "缩放", "旋转" });
         }
 
         private void DrawPreviewSection()
@@ -275,59 +276,26 @@ namespace GestureTween.Editor
                     GoToPreviewTime(_previewTimeNormalized);
                 }
             }
-
-            _dynamicEditWhilePlaying = EditorGUILayout.ToggleLeft("动态模式：播放中允许手柄实时改值", _dynamicEditWhilePlaying);
         }
 
-        private void DrawModeInspector()
+        private void DrawPathToolSection()
         {
-            switch (_mode)
-            {
-                case WorkbenchMode.Global:
-                    DrawGlobalInspector();
-                    break;
-                case WorkbenchMode.Path:
-                    DrawPathInspector();
-                    break;
-                case WorkbenchMode.Scale:
-                    DrawScaleInspector();
-                    break;
-                case WorkbenchMode.Rotation:
-                    DrawRotationInspector();
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException();
-            }
-        }
+            EditorGUILayout.LabelField("快速路径绘制", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox("在 Scene 视图按住 Shift + 左键拖拽即可手绘路径。Shift 绘制期间会显示半透明虚影跟随。", MessageType.None);
 
-        private void DrawGlobalInspector()
-        {
-            EditorGUILayout.LabelField("全局参数", EditorStyles.boldLabel);
             _sceneEditingEnabled = EditorGUILayout.ToggleLeft("启用 Scene 编辑", _sceneEditingEnabled);
-            _showSceneModePanel = EditorGUILayout.ToggleLeft("显示 Scene 模式小面板", _showSceneModePanel);
             _requireShiftToDraw = EditorGUILayout.ToggleLeft("路径绘制需要 Shift", _requireShiftToDraw);
             _drawPlane = (DrawPlane)EditorGUILayout.EnumPopup("路径绘制平面", _drawPlane);
-            _handleSizeMultiplier = EditorGUILayout.Slider("手柄尺寸", _handleSizeMultiplier, 0.2f, 2.2f);
+            _ghostFollowEnabled = EditorGUILayout.ToggleLeft("启用虚影跟随", _ghostFollowEnabled);
 
             EditorGUI.BeginChangeCheck();
-            _recommendedDuration = EditorGUILayout.FloatField("推荐时长(秒)", Mathf.Max(MinDuration, _recommendedDuration));
-            if (EditorGUI.EndChangeCheck() && HasWorkspaceReady)
+            _ghostAlpha = EditorGUILayout.Slider("虚影透明度", _ghostAlpha, 0.05f, 0.8f);
+            _ghostFollowSmoothTime = EditorGUILayout.Slider("虚影跟随延迟", _ghostFollowSmoothTime, 0.01f, 0.25f);
+            if (EditorGUI.EndChangeCheck())
             {
-                Undo.RecordObjects(new Object[] { _pathTrack, _scaleTrack, _rotationTrack }, "Sync Gesture Duration");
-                _pathTrack.TrackDuration = _recommendedDuration;
-                _scaleTrack.TrackDuration = _recommendedDuration;
-                _rotationTrack.TrackDuration = _recommendedDuration;
-                SetDirty(_pathTrack);
-                SetDirty(_scaleTrack);
-                SetDirty(_rotationTrack);
-                RefreshPreviewPoseIfStopped();
+                _ghostAlpha = Mathf.Clamp01(_ghostAlpha);
+                _ghostFollowSmoothTime = Mathf.Clamp(_ghostFollowSmoothTime, 0.01f, 0.25f);
             }
-        }
-
-        private void DrawPathInspector()
-        {
-            EditorGUILayout.LabelField("路径模式", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("在 Scene 视图按住左键绘制路径，抬起后自动写入 Path 通道。", MessageType.None);
 
             if (!HasWorkspaceReady)
             {
@@ -338,16 +306,27 @@ namespace GestureTween.Editor
             float duration = EditorGUILayout.FloatField("通道时长(秒)", Mathf.Max(MinDuration, _pathTrack.TrackDuration));
             bool useLocalSpace = EditorGUILayout.ToggleLeft("Path 使用 Local 空间", _pathUseLocalSpace);
             AnimationCurve easeCurve = EditorGUILayout.CurveField("Ease 曲线", _pathTrack.EaseCurve, Color.cyan, new Rect(0f, 0f, 1f, 1f));
-            _smoothing = EditorGUILayout.Slider("平滑强度", _smoothing, 0f, 1f);
-            _pathSimplifyTolerance = EditorGUILayout.Slider("路径简化容差", _pathSimplifyTolerance, 0f, 0.3f);
+
             _minSampleDistance = EditorGUILayout.Slider("采样最小距离", _minSampleDistance, 0.001f, 0.2f);
             _minSampleInterval = EditorGUILayout.Slider("采样最小间隔", _minSampleInterval, 0f, 0.08f);
+
+            _captureSmoothingStrength = EditorGUILayout.Slider("手绘去抖强度", _captureSmoothingStrength, 0f, 1f);
+            _captureSmoothingPasses = EditorGUILayout.IntSlider("手绘去抖轮次", _captureSmoothingPasses, 1, 6);
+            _captureSimplifyAmount = EditorGUILayout.Slider("手绘简化幅度", _captureSimplifyAmount, 0f, 1f);
+
+            _autoBezierOnStroke = EditorGUILayout.ToggleLeft("落笔后自动贝塞尔抽象", _autoBezierOnStroke);
+            if (_autoBezierOnStroke)
+            {
+                _autoBezierAmount = EditorGUILayout.Slider("自动贝塞尔强度", _autoBezierAmount, 0f, 1f);
+                _autoBezierDensity = EditorGUILayout.Slider("自动贝塞尔密度", _autoBezierDensity, 0.3f, 2.5f);
+            }
+
             if (EditorGUI.EndChangeCheck())
             {
                 Undo.RecordObject(_pathTrack, "Edit Gesture Path Track");
                 _pathUseLocalSpace = useLocalSpace;
                 _pathTrack.UseLocalSpace = _pathUseLocalSpace;
-                _pathTrack.TrackDuration = duration;
+                _pathTrack.TrackDuration = Mathf.Max(MinDuration, duration);
                 _pathTrack.EaseCurve = CloneCurve(easeCurve, 0f);
                 _recommendedDuration = _pathTrack.TrackDuration;
                 SetDirty(_pathTrack);
@@ -355,13 +334,13 @@ namespace GestureTween.Editor
             }
 
             int pointCount = _pathTrack.LocalPathPoints != null ? _pathTrack.LocalPathPoints.Count : 0;
-            EditorGUILayout.LabelField("路径点数", pointCount.ToString());
+            EditorGUILayout.LabelField("当前路径点数", pointCount.ToString());
+            EditorGUILayout.LabelField("当前笔画采样数", _strokeSamples.Count.ToString());
 
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("清空当前笔画"))
             {
-                _samples.Clear();
-                _isDrawing = false;
+                CancelStroke();
                 SceneView.RepaintAll();
             }
 
@@ -372,88 +351,74 @@ namespace GestureTween.Editor
 
             EditorGUILayout.EndHorizontal();
         }
-
-        private void DrawScaleInspector()
+        private void DrawPostProcessSection()
         {
-            EditorGUILayout.LabelField("缩放模式 (XYZ)", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("在 Scene 里拖动红/绿/蓝轴手柄，实时写入 X/Y/Z 缩放曲线。", MessageType.None);
+            EditorGUILayout.LabelField("路径后处理", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox("所有后处理都锁定起终点，并支持“撤销一步后处理”和“还原到本次手绘原始路径”。", MessageType.None);
 
             if (!HasWorkspaceReady)
             {
                 return;
             }
 
-            float previewT = GetEditingNormalizedTime();
-            EditorGUILayout.LabelField("当前预览时间", previewT.ToString("0.000"));
-
-            EditorGUI.BeginChangeCheck();
-            float duration = EditorGUILayout.FloatField("通道时长(秒)", Mathf.Max(MinDuration, _scaleTrack.TrackDuration));
-            _scaleHandleSensitivity = EditorGUILayout.Slider("手柄灵敏度", _scaleHandleSensitivity, 0.1f, 4f);
-            AnimationCurve x = EditorGUILayout.CurveField("X Scale", _scaleTrack.XCurve, Color.red, new Rect(0f, 0f, 1f, 2f));
-            AnimationCurve y = EditorGUILayout.CurveField("Y Scale", _scaleTrack.YCurve, Color.green, new Rect(0f, 0f, 1f, 2f));
-            AnimationCurve z = EditorGUILayout.CurveField("Z Scale", _scaleTrack.ZCurve, Color.blue, new Rect(0f, 0f, 1f, 2f));
-            if (EditorGUI.EndChangeCheck())
+            EditorGUILayout.BeginVertical(GUI.skin.box);
+            EditorGUILayout.LabelField("路径平滑", EditorStyles.boldLabel);
+            _postSmoothStrength = EditorGUILayout.Slider("平滑强度", _postSmoothStrength, 0f, 1f);
+            _postSmoothPasses = EditorGUILayout.IntSlider("平滑轮次", _postSmoothPasses, 1, 8);
+            if (GUILayout.Button("一键平滑路径"))
             {
-                Undo.RecordObject(_scaleTrack, "Edit Gesture Scale Track");
-                _scaleTrack.SetCurves(CloneCurve(x, 1f), CloneCurve(y, 1f), CloneCurve(z, 1f), duration);
-                _recommendedDuration = _scaleTrack.TrackDuration;
-                SetDirty(_scaleTrack);
-                RefreshPreviewPoseIfStopped();
+                ApplySmoothingPostProcess();
             }
+
+            EditorGUILayout.EndVertical();
+
+            EditorGUILayout.BeginVertical(GUI.skin.box);
+            EditorGUILayout.LabelField("贝塞尔简化", EditorStyles.boldLabel);
+            _postBezierAmount = EditorGUILayout.Slider("简化幅度", _postBezierAmount, 0f, 1f);
+            _postBezierDensity = EditorGUILayout.Slider("曲线密度", _postBezierDensity, 0.3f, 2.5f);
 
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("重置 Scale 曲线"))
+            if (GUILayout.Button("贝塞尔简化路径"))
             {
-                ResetScaleTrack();
+                ApplyBezierPostProcess();
             }
 
-            if (GUILayout.Button("当前时间写入 1/1/1"))
+            if (GUILayout.Button("平滑 + 贝塞尔简化"))
             {
-                WriteScaleKeyAtCurrentTime(1f, 1f, 1f);
+                ApplySmoothAndBezierPostProcess();
             }
 
             EditorGUILayout.EndHorizontal();
-        }
+            EditorGUILayout.EndVertical();
 
-        private void DrawRotationInspector()
-        {
-            EditorGUILayout.LabelField("旋转模式 (XYZ)", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("在 Scene 里拖动红/绿/蓝轴手柄，实时写入 X/Y/Z 旋转曲线（角度增量）。", MessageType.None);
+            EditorGUILayout.BeginVertical(GUI.skin.box);
+            EditorGUILayout.LabelField("缓动优化", EditorStyles.boldLabel);
+            _easeIntentStrength = EditorGUILayout.Slider("意图适配强度", _easeIntentStrength, 0f, 1f);
+            _easeJitterSuppression = EditorGUILayout.Slider("缓动抖动抑制", _easeJitterSuppression, 0f, 1f);
+            _easeKeyReduction = EditorGUILayout.Slider("关键点压缩幅度", _easeKeyReduction, 0f, 1f);
 
-            if (!HasWorkspaceReady)
+            if (GUILayout.Button("重建节奏缓动（基于最近一次手绘）"))
             {
-                return;
+                OptimizeEaseFromLastStroke();
             }
 
-            float previewT = GetEditingNormalizedTime();
-            EditorGUILayout.LabelField("当前预览时间", previewT.ToString("0.000"));
-
-            EditorGUI.BeginChangeCheck();
-            float duration = EditorGUILayout.FloatField("通道时长(秒)", Mathf.Max(MinDuration, _rotationTrack.TrackDuration));
-            bool useLocal = EditorGUILayout.ToggleLeft("旋转使用 Local 空间", _rotationTrack.UseLocalSpace);
-            _rotationHandleSensitivity = EditorGUILayout.Slider("手柄灵敏度(角度/单位)", _rotationHandleSensitivity, 5f, 240f);
-            AnimationCurve x = EditorGUILayout.CurveField("X Rotation", _rotationTrack.XCurve, Color.red, new Rect(0f, -180f, 1f, 360f));
-            AnimationCurve y = EditorGUILayout.CurveField("Y Rotation", _rotationTrack.YCurve, Color.green, new Rect(0f, -180f, 1f, 360f));
-            AnimationCurve z = EditorGUILayout.CurveField("Z Rotation", _rotationTrack.ZCurve, Color.blue, new Rect(0f, -180f, 1f, 360f));
-            if (EditorGUI.EndChangeCheck())
-            {
-                Undo.RecordObject(_rotationTrack, "Edit Gesture Rotation Track");
-                _rotationTrack.UseLocalSpace = useLocal;
-                _rotationTrack.SetCurves(CloneCurve(x, 0f), CloneCurve(y, 0f), CloneCurve(z, 0f), duration);
-                _recommendedDuration = _rotationTrack.TrackDuration;
-                SetDirty(_rotationTrack);
-                RefreshPreviewPoseIfStopped();
-            }
+            EditorGUILayout.EndVertical();
 
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("重置 Rotation 曲线"))
+            using (new EditorGUI.DisabledScope(_postProcessUndoStack.Count == 0))
             {
-                ResetRotationTrack();
+                if (GUILayout.Button("撤销一步后处理"))
+                {
+                    UndoOnePostProcessStep();
+                }
             }
 
-            if (GUILayout.Button("当前时间写入 0/0/0"))
+            using (new EditorGUI.DisabledScope(_lastStrokeBaselineOffsets == null || _lastStrokeBaselineOffsets.Count < 2))
             {
-                WriteRotationKeyAtCurrentTime(0f, 0f, 0f);
+                if (GUILayout.Button("还原到本次手绘原始路径"))
+                {
+                    RestoreToLastStrokeBaseline();
+                }
             }
 
             EditorGUILayout.EndHorizontal();
@@ -475,85 +440,30 @@ namespace GestureTween.Editor
                 return;
             }
 
-            switch (_mode)
-            {
-                case WorkbenchMode.Global:
-                    break;
-                case WorkbenchMode.Path:
-                    DrawStrokeInScene();
-                    DrawGeneratedPathInScene();
-                    HandlePathInput(sceneView);
-                    DrawSceneMiniPanel(DrawPathScenePanelGUI);
-                    break;
-                case WorkbenchMode.Scale:
-                    DrawScaleHandlesInScene();
-                    DrawSceneMiniPanel(DrawScaleScenePanelGUI);
-                    break;
-                case WorkbenchMode.Rotation:
-                    DrawRotationHandlesInScene();
-                    DrawSceneMiniPanel(DrawRotationScenePanelGUI);
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException();
-            }
-        }
-
-        private void DrawPathScenePanelGUI()
-        {
-            EditorGUILayout.LabelField("路径快捷参数", EditorStyles.miniBoldLabel);
-            _smoothing = EditorGUILayout.Slider("平滑", _smoothing, 0f, 1f);
-            _pathSimplifyTolerance = EditorGUILayout.Slider("简化", _pathSimplifyTolerance, 0f, 0.3f);
-            _minSampleDistance = EditorGUILayout.Slider("采样距离", _minSampleDistance, 0.001f, 0.2f);
-            _minSampleInterval = EditorGUILayout.Slider("采样间隔", _minSampleInterval, 0f, 0.08f);
-            _drawPlane = (DrawPlane)EditorGUILayout.EnumPopup("绘制平面", _drawPlane);
-        }
-
-        private void DrawScaleScenePanelGUI()
-        {
-            EditorGUILayout.LabelField("缩放快捷参数", EditorStyles.miniBoldLabel);
-            EditorGUILayout.LabelField("当前时间", GetEditingNormalizedTime().ToString("0.000"));
-            _scaleHandleSensitivity = EditorGUILayout.Slider("灵敏度", _scaleHandleSensitivity, 0.1f, 4f);
-            _handleSizeMultiplier = EditorGUILayout.Slider("手柄尺寸", _handleSizeMultiplier, 0.2f, 2.2f);
-        }
-
-        private void DrawRotationScenePanelGUI()
-        {
-            EditorGUILayout.LabelField("旋转快捷参数", EditorStyles.miniBoldLabel);
-            EditorGUILayout.LabelField("当前时间", GetEditingNormalizedTime().ToString("0.000"));
-            _rotationHandleSensitivity = EditorGUILayout.Slider("灵敏度", _rotationHandleSensitivity, 5f, 240f);
-            _handleSizeMultiplier = EditorGUILayout.Slider("手柄尺寸", _handleSizeMultiplier, 0.2f, 2.2f);
-        }
-
-        private void DrawSceneMiniPanel(Action drawBody)
-        {
-            if (!_showSceneModePanel || _mode == WorkbenchMode.Global)
-            {
-                return;
-            }
-
-            Handles.BeginGUI();
-            GUILayout.BeginArea(new Rect(14f, 14f, 340f, 220f), GUI.skin.window);
-            _scenePanelFoldout = EditorGUILayout.Foldout(_scenePanelFoldout, $"{_mode} 小面板", true);
-            if (_scenePanelFoldout)
-            {
-                drawBody?.Invoke();
-            }
-
-            GUILayout.EndArea();
-            Handles.EndGUI();
+            DrawGeneratedPathInScene();
+            DrawStrokeInScene();
+            DrawGhostFollower(sceneView);
+            HandlePathInput(sceneView);
         }
 
         private void DrawStrokeInScene()
         {
-            if (_samples.Count < 2)
+            if (_strokeSamples.Count >= 2)
             {
-                return;
+                Handles.color = new Color(1f, 0.55f, 0.1f, 0.8f);
+                for (int i = 0; i < _strokeSamples.Count - 1; i++)
+                {
+                    Handles.DrawLine(_strokeSamples[i].worldPos, _strokeSamples[i + 1].worldPos);
+                }
             }
 
-            Handles.color = new Color(1f, 0.55f, 0.1f, 0.95f);
-            for (int i = 0; i < _samples.Count - 1; i++)
+            if (_liveStrokePath.Count >= 2)
             {
-                Handles.DrawLine(_samples[i].worldPos, _samples[i + 1].worldPos);
+                Handles.color = new Color(1f, 0.85f, 0.2f, 0.95f);
+                for (int i = 0; i < _liveStrokePath.Count - 1; i++)
+                {
+                    Handles.DrawLine(_liveStrokePath[i], _liveStrokePath[i + 1]);
+                }
             }
         }
 
@@ -578,15 +488,151 @@ namespace GestureTween.Editor
             }
 
             Handles.color = Color.white;
-            foreach (Vector3 p in worldPath)
+            foreach (Vector3 point in worldPath)
             {
-                Handles.DrawSolidDisc(p, Vector3.forward, HandleUtility.GetHandleSize(p) * 0.03f);
+                Handles.DrawSolidDisc(point, Vector3.forward, HandleUtility.GetHandleSize(point) * 0.03f);
             }
+        }
+
+        private void DrawGhostFollower(SceneView sceneView)
+        {
+            if (!_ghostActive || !_strokeStartedWithShift || !_ghostFollowEnabled)
+            {
+                return;
+            }
+
+            if (_pathTrack == null)
+            {
+                return;
+            }
+
+            Transform target = _pathTrack.ResolveTarget();
+            if (target == null)
+            {
+                return;
+            }
+
+            if (Event.current.type != EventType.Repaint)
+            {
+                return;
+            }
+
+            Vector3 worldOffset = _ghostWorldPosition - target.position;
+            bool meshDrawn = DrawGhostMeshes(target, worldOffset);
+
+            Handles.color = new Color(0.2f, 0.95f, 1f, Mathf.Clamp01(_ghostAlpha * 2f));
+            Handles.DrawDottedLine(target.position, _ghostWorldPosition, 4f);
+
+            if (!meshDrawn)
+            {
+                Bounds bounds = CalculateRendererBounds(target);
+                Vector3 center = bounds.center + worldOffset;
+                Vector3 size = bounds.size;
+                if (size.sqrMagnitude < 0.0001f)
+                {
+                    float fallback = HandleUtility.GetHandleSize(center) * 0.2f;
+                    size = Vector3.one * fallback;
+                }
+
+                Handles.DrawWireCube(center, size);
+            }
+
+            if (sceneView != null)
+            {
+                sceneView.Repaint();
+            }
+        }
+
+        private bool DrawGhostMeshes(Transform target, Vector3 worldOffset)
+        {
+            EnsureGhostMaterial();
+            if (_ghostMaterial == null)
+            {
+                return false;
+            }
+
+            Color color = new Color(0.2f, 0.95f, 1f, _ghostAlpha);
+            if (_ghostMaterial.HasProperty("_Color"))
+            {
+                _ghostMaterial.SetColor("_Color", color);
+            }
+
+            bool drawn = false;
+            Matrix4x4 translation = Matrix4x4.Translate(worldOffset);
+            MeshFilter[] meshFilters = target.GetComponentsInChildren<MeshFilter>(true);
+            for (int i = 0; i < meshFilters.Length; i++)
+            {
+                MeshFilter meshFilter = meshFilters[i];
+                MeshRenderer meshRenderer = meshFilter != null ? meshFilter.GetComponent<MeshRenderer>() : null;
+                Mesh mesh = meshFilter != null ? meshFilter.sharedMesh : null;
+                if (meshFilter == null || meshRenderer == null || mesh == null || !meshRenderer.enabled)
+                {
+                    continue;
+                }
+
+                _ghostMaterial.SetPass(0);
+                Graphics.DrawMeshNow(mesh, translation * meshFilter.transform.localToWorldMatrix);
+                drawn = true;
+            }
+
+            return drawn;
+        }
+
+        private void EnsureGhostMaterial()
+        {
+            if (_ghostMaterial != null)
+            {
+                return;
+            }
+
+            Shader shader = Shader.Find("Hidden/Internal-Colored");
+            if (shader == null)
+            {
+                return;
+            }
+
+            _ghostMaterial = new Material(shader)
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+
+            _ghostMaterial.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            _ghostMaterial.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            _ghostMaterial.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+            _ghostMaterial.SetInt("_ZWrite", 0);
+        }
+
+        private void ReleaseGhostMaterial()
+        {
+            if (_ghostMaterial == null)
+            {
+                return;
+            }
+
+            DestroyImmediate(_ghostMaterial);
+            _ghostMaterial = null;
+        }
+
+        private static Bounds CalculateRendererBounds(Transform target)
+        {
+            Renderer[] renderers = target.GetComponentsInChildren<Renderer>(true);
+            if (renderers.Length == 0)
+            {
+                return new Bounds(target.position, Vector3.zero);
+            }
+
+            Bounds bounds = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+            {
+                bounds.Encapsulate(renderers[i].bounds);
+            }
+
+            return bounds;
         }
 
         private void HandlePathInput(SceneView sceneView)
         {
-            if (_mode != WorkbenchMode.Path || _pathTrack == null)
+            if (_pathTrack == null)
             {
                 return;
             }
@@ -626,8 +672,7 @@ namespace GestureTween.Editor
 
                 if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape)
                 {
-                    _samples.Clear();
-                    _isDrawing = false;
+                    CancelStroke();
                     e.Use();
                     SceneView.RepaintAll();
                 }
@@ -639,154 +684,12 @@ namespace GestureTween.Editor
             {
                 if (TryGetWorldPoint(sceneView, e.mousePosition, out Vector3 world))
                 {
-                    StartStroke(e.mousePosition, world);
+                    StartStroke(e.mousePosition, world, e.shift);
                     e.Use();
                     SceneView.RepaintAll();
                 }
             }
         }
-
-        private void DrawScaleHandlesInScene()
-        {
-            if (!CanEditHandlesNow())
-            {
-                return;
-            }
-
-            Transform target = _scaleTrack.ResolveTarget();
-            if (target == null)
-            {
-                return;
-            }
-
-            float t = GetEditingNormalizedTime();
-            float x = _scaleTrack.XCurve.Evaluate(t);
-            float y = _scaleTrack.YCurve.Evaluate(t);
-            float z = _scaleTrack.ZCurve.Evaluate(t);
-
-            Vector3 pivot = target.position;
-            float size = HandleUtility.GetHandleSize(pivot) * _handleSizeMultiplier;
-            float worldUnit = Mathf.Max(0.0001f, size * 0.55f);
-            float baseOffset = size * 0.35f;
-
-            bool changed = false;
-            changed |= DrawAxisSliderHandle(pivot, target.right, 1f, ref x, baseOffset, worldUnit, _scaleHandleSensitivity, Color.red, "SX");
-            changed |= DrawAxisSliderHandle(pivot, target.up, 1f, ref y, baseOffset, worldUnit, _scaleHandleSensitivity, Color.green, "SY");
-            changed |= DrawAxisSliderHandle(pivot, target.forward, 1f, ref z, baseOffset, worldUnit, _scaleHandleSensitivity, Color.blue, "SZ");
-
-            if (!changed)
-            {
-                return;
-            }
-
-            x = Mathf.Max(0.01f, x);
-            y = Mathf.Max(0.01f, y);
-            z = Mathf.Max(0.01f, z);
-            WriteScaleKeyAtCurrentTime(x, y, z);
-        }
-
-        private void DrawRotationHandlesInScene()
-        {
-            if (!CanEditHandlesNow())
-            {
-                return;
-            }
-
-            Transform target = _rotationTrack.ResolveTarget();
-            if (target == null)
-            {
-                return;
-            }
-
-            float t = GetEditingNormalizedTime();
-            float x = _rotationTrack.XCurve.Evaluate(t);
-            float y = _rotationTrack.YCurve.Evaluate(t);
-            float z = _rotationTrack.ZCurve.Evaluate(t);
-
-            Vector3 xAxis = _rotationTrack.UseLocalSpace ? target.right : Vector3.right;
-            Vector3 yAxis = _rotationTrack.UseLocalSpace ? target.up : Vector3.up;
-            Vector3 zAxis = _rotationTrack.UseLocalSpace ? target.forward : Vector3.forward;
-
-            Vector3 pivot = target.position;
-            float size = HandleUtility.GetHandleSize(pivot) * _handleSizeMultiplier;
-            float worldUnit = Mathf.Max(0.0001f, size * 0.55f);
-            float baseOffset = size * 0.6f;
-
-            bool changed = false;
-            changed |= DrawAxisSliderHandle(pivot, xAxis, 0f, ref x, baseOffset, worldUnit, _rotationHandleSensitivity, Color.red, "RX");
-            changed |= DrawAxisSliderHandle(pivot, yAxis, 0f, ref y, baseOffset, worldUnit, _rotationHandleSensitivity, Color.green, "RY");
-            changed |= DrawAxisSliderHandle(pivot, zAxis, 0f, ref z, baseOffset, worldUnit, _rotationHandleSensitivity, Color.blue, "RZ");
-
-            if (!changed)
-            {
-                return;
-            }
-
-            WriteRotationKeyAtCurrentTime(x, y, z);
-        }
-
-        private bool CanEditHandlesNow()
-        {
-            if (!HasWorkspaceReady)
-            {
-                return false;
-            }
-
-            if (_previewController.IsPlaying && !_dynamicEditWhilePlaying)
-            {
-                Handles.BeginGUI();
-                GUILayout.BeginArea(new Rect(14f, 238f, 340f, 46f), GUI.skin.box);
-                GUILayout.Label("播放中已禁用手柄编辑。开启动态模式可实时改值。");
-                GUILayout.EndArea();
-                Handles.EndGUI();
-                return false;
-            }
-
-            return true;
-        }
-
-        private static bool DrawAxisSliderHandle(
-            Vector3 pivot,
-            Vector3 axis,
-            float baseValue,
-            ref float value,
-            float baseOffset,
-            float worldUnit,
-            float sensitivity,
-            Color color,
-            string label)
-        {
-            if (axis.sqrMagnitude < 0.0001f || worldUnit <= 0.0001f || sensitivity <= 0.0001f)
-            {
-                return false;
-            }
-
-            Vector3 axisDir = axis.normalized;
-            Vector3 zeroPoint = pivot + axisDir * baseOffset;
-            Vector3 currentPoint = zeroPoint + axisDir * ((value - baseValue) / sensitivity * worldUnit);
-
-            Handles.color = new Color(color.r, color.g, color.b, 0.9f);
-            Handles.DrawLine(zeroPoint, currentPoint);
-            Handles.Label(currentPoint + axisDir * (HandleUtility.GetHandleSize(currentPoint) * 0.08f), $"{label}: {value:0.##}");
-
-            EditorGUI.BeginChangeCheck();
-            Vector3 movedPoint = Handles.Slider(
-                currentPoint,
-                axisDir,
-                HandleUtility.GetHandleSize(currentPoint) * 0.09f,
-                Handles.ConeHandleCap,
-                0f);
-
-            if (!EditorGUI.EndChangeCheck())
-            {
-                return false;
-            }
-
-            float worldDelta = Vector3.Dot(movedPoint - zeroPoint, axisDir);
-            value = baseValue + worldDelta / worldUnit * sensitivity;
-            return true;
-        }
-
         private bool TryGetWorldPoint(SceneView sceneView, Vector2 guiPosition, out Vector3 worldPoint)
         {
             worldPoint = Vector3.zero;
@@ -829,19 +732,41 @@ namespace GestureTween.Editor
             return true;
         }
 
-        private void StartStroke(Vector2 guiPos, Vector3 worldPos)
+        private void StartStroke(Vector2 guiPos, Vector3 worldPos, bool startedWithShift)
         {
-            _samples.Clear();
+            _strokeSamples.Clear();
+            _liveStrokePath.Clear();
             _isDrawing = true;
+            _strokeStartedWithShift = startedWithShift;
+            _ghostActive = false;
+
             AddSample(guiPos, worldPos, force: true);
+
+            if (_ghostFollowEnabled && _strokeStartedWithShift)
+            {
+                _ghostActive = true;
+                _ghostWorldPosition = worldPos;
+                _ghostTargetWorldPosition = worldPos;
+                _ghostVelocity = Vector3.zero;
+            }
+        }
+
+        private void CancelStroke()
+        {
+            _strokeSamples.Clear();
+            _liveStrokePath.Clear();
+            _isDrawing = false;
+            _strokeStartedWithShift = false;
+            _ghostActive = false;
+            _ghostVelocity = Vector3.zero;
         }
 
         private void AddSample(Vector2 guiPos, Vector3 worldPos, bool force = false)
         {
             float now = (float)EditorApplication.timeSinceStartup;
-            if (!force && _samples.Count > 0)
+            if (!force && _strokeSamples.Count > 0)
             {
-                StrokeSample last = _samples[^1];
+                StrokeSample last = _strokeSamples[^1];
                 float dt = now - last.timestamp;
                 float dist = Vector3.Distance(last.worldPos, worldPos);
                 if (dt < _minSampleInterval && dist < _minSampleDistance)
@@ -850,94 +775,336 @@ namespace GestureTween.Editor
                 }
             }
 
-            _samples.Add(new StrokeSample
+            _strokeSamples.Add(new StrokeSample
             {
                 sceneGuiPos = guiPos,
                 worldPos = worldPos,
                 timestamp = now
             });
+
+            UpdateLiveStrokePath();
+            UpdateGhostFollow(now);
+        }
+
+        private void UpdateLiveStrokePath()
+        {
+            _liveStrokePath.Clear();
+            if (_strokeSamples.Count == 0)
+            {
+                return;
+            }
+
+            var raw = new List<Vector3>(_strokeSamples.Count);
+            for (int i = 0; i < _strokeSamples.Count; i++)
+            {
+                raw.Add(_strokeSamples[i].worldPos);
+            }
+
+            List<Vector3> current = ApplyIterativeSmoothing(raw, _captureSmoothingStrength, _captureSmoothingPasses);
+            float simplifyTolerance = ComputeWorldTolerance(current, _captureSimplifyAmount);
+            current = SimplifyPath(current, simplifyTolerance);
+
+            if (_autoBezierOnStroke && current.Count >= 3)
+            {
+                current = SimplifyToBezierPath(current, _autoBezierAmount, _autoBezierDensity);
+            }
+
+            _liveStrokePath.AddRange(current);
+        }
+
+        private void UpdateGhostFollow(float now)
+        {
+            if (!_ghostFollowEnabled || !_strokeStartedWithShift || _strokeSamples.Count == 0)
+            {
+                _ghostActive = false;
+                return;
+            }
+
+            _ghostTargetWorldPosition = _liveStrokePath.Count > 0
+                ? _liveStrokePath[^1]
+                : _strokeSamples[^1].worldPos;
+
+            if (!_ghostActive)
+            {
+                _ghostActive = true;
+                _ghostWorldPosition = _ghostTargetWorldPosition;
+                _ghostVelocity = Vector3.zero;
+                return;
+            }
+
+            float dt = 0.016f;
+            if (_strokeSamples.Count >= 2)
+            {
+                dt = Mathf.Max(0.0001f, _strokeSamples[^1].timestamp - _strokeSamples[^2].timestamp);
+            }
+
+            _ghostWorldPosition = Vector3.SmoothDamp(
+                _ghostWorldPosition,
+                _ghostTargetWorldPosition,
+                ref _ghostVelocity,
+                _ghostFollowSmoothTime,
+                Mathf.Infinity,
+                dt);
         }
 
         private void FinishStroke()
         {
             _isDrawing = false;
-            if (_samples.Count < 2 || !HasWorkspaceReady)
+            _strokeStartedWithShift = false;
+            _ghostActive = false;
+            _ghostVelocity = Vector3.zero;
+
+            if (_strokeSamples.Count < 2 || !HasWorkspaceReady)
+            {
+                _strokeSamples.Clear();
+                _liveStrokePath.Clear();
+                return;
+            }
+
+            _recommendedDuration = Mathf.Max(MinDuration, _strokeSamples[^1].timestamp - _strokeSamples[0].timestamp);
+
+            _lastStrokeSamples.Clear();
+            _lastStrokeSamples.AddRange(_strokeSamples);
+
+            List<Vector3> finalPath = _liveStrokePath.Count >= 2
+                ? new List<Vector3>(_liveStrokePath)
+                : _strokeSamples.Select(sample => sample.worldPos).ToList();
+
+            finalPath = ResamplePathIfNeeded(finalPath, MaxBezierResamplePoints);
+            if (finalPath.Count < 2)
+            {
+                _strokeSamples.Clear();
+                _liveStrokePath.Clear();
+                return;
+            }
+
+            AnimationCurve optimizedEase = BuildOptimizedEaseCurve(
+                _lastStrokeSamples,
+                _easeIntentStrength,
+                _easeJitterSuppression,
+                _easeKeyReduction);
+
+            ApplyWorldPathToTrack(
+                finalPath,
+                optimizedEase,
+                _recommendedDuration,
+                "Generate Gesture Path",
+                captureBaseline: true,
+                clearPostHistory: true);
+
+            _strokeSamples.Clear();
+            _liveStrokePath.Clear();
+            Repaint();
+        }
+
+        private void ApplySmoothingPostProcess()
+        {
+            if (!TryGetCurrentWorldPath(out List<Vector3> worldPath) || worldPath.Count < 3)
             {
                 return;
             }
 
-            _recommendedDuration = Mathf.Max(MinDuration, _samples[^1].timestamp - _samples[0].timestamp);
-            GeneratePositionChannel();
-            _samples.Clear();
-            Repaint();
+            PushPostProcessSnapshot();
+            List<Vector3> smoothed = ApplyIterativeSmoothing(worldPath, _postSmoothStrength, _postSmoothPasses);
+            ApplyWorldPathToTrack(
+                smoothed,
+                CloneCurve(_pathTrack.EaseCurve, 0f),
+                Mathf.Max(MinDuration, _pathTrack.TrackDuration),
+                "Smooth Gesture Path",
+                captureBaseline: false,
+                clearPostHistory: false);
         }
 
-        private void GeneratePositionChannel()
+        private void ApplyBezierPostProcess()
         {
+            if (!TryGetCurrentWorldPath(out List<Vector3> worldPath) || worldPath.Count < 3)
+            {
+                return;
+            }
+
+            PushPostProcessSnapshot();
+            List<Vector3> simplified = SimplifyToBezierPath(worldPath, _postBezierAmount, _postBezierDensity);
+            ApplyWorldPathToTrack(
+                simplified,
+                CloneCurve(_pathTrack.EaseCurve, 0f),
+                Mathf.Max(MinDuration, _pathTrack.TrackDuration),
+                "Bezier Simplify Gesture Path",
+                captureBaseline: false,
+                clearPostHistory: false);
+        }
+
+        private void ApplySmoothAndBezierPostProcess()
+        {
+            if (!TryGetCurrentWorldPath(out List<Vector3> worldPath) || worldPath.Count < 3)
+            {
+                return;
+            }
+
+            PushPostProcessSnapshot();
+            List<Vector3> smoothed = ApplyIterativeSmoothing(worldPath, _postSmoothStrength, _postSmoothPasses);
+            List<Vector3> simplified = SimplifyToBezierPath(smoothed, _postBezierAmount, _postBezierDensity);
+
+            ApplyWorldPathToTrack(
+                simplified,
+                CloneCurve(_pathTrack.EaseCurve, 0f),
+                Mathf.Max(MinDuration, _pathTrack.TrackDuration),
+                "Smooth + Bezier Gesture Path",
+                captureBaseline: false,
+                clearPostHistory: false);
+        }
+
+        private void OptimizeEaseFromLastStroke()
+        {
+            if (_pathTrack == null)
+            {
+                return;
+            }
+
+            if (_lastStrokeSamples.Count < 2)
+            {
+                Debug.LogWarning("[GestureTween] 没有最近一次手绘数据，无法重建节奏缓动。");
+                return;
+            }
+
+            AnimationCurve optimizedEase = BuildOptimizedEaseCurve(
+                _lastStrokeSamples,
+                _easeIntentStrength,
+                _easeJitterSuppression,
+                _easeKeyReduction);
+
+            Undo.RecordObject(_pathTrack, "Optimize Gesture Ease");
+            _pathTrack.EaseCurve = optimizedEase;
+            SetDirty(_pathTrack);
+
+            RefreshPreviewPoseIfStopped();
+        }
+
+        private void PushPostProcessSnapshot()
+        {
+            if (_pathTrack == null || _pathTrack.LocalPathPoints == null || _pathTrack.LocalPathPoints.Count < 2)
+            {
+                return;
+            }
+
+            _postProcessUndoStack.Push(new List<Vector3>(_pathTrack.LocalPathPoints));
+        }
+
+        private void UndoOnePostProcessStep()
+        {
+            if (_postProcessUndoStack.Count == 0)
+            {
+                return;
+            }
+
+            List<Vector3> offsets = _postProcessUndoStack.Pop();
+            ApplyLocalOffsetsToTrack(offsets, "Undo Gesture Path Post-Process");
+        }
+
+        private void RestoreToLastStrokeBaseline()
+        {
+            if (_lastStrokeBaselineOffsets == null || _lastStrokeBaselineOffsets.Count < 2)
+            {
+                return;
+            }
+
+            PushPostProcessSnapshot();
+            ApplyLocalOffsetsToTrack(_lastStrokeBaselineOffsets, "Restore Gesture Stroke Baseline");
+        }
+
+        private bool TryGetCurrentWorldPath(out List<Vector3> worldPath)
+        {
+            worldPath = new List<Vector3>();
+            if (_pathTrack == null)
+            {
+                return false;
+            }
+
+            Transform target = _pathTrack.ResolveTarget();
+            if (target == null)
+            {
+                return false;
+            }
+
+            worldPath = BuildWorldPath(target, _pathTrack.LocalPathPoints);
+            return worldPath.Count >= 2;
+        }
+        private void ApplyLocalOffsetsToTrack(IReadOnlyList<Vector3> offsets, string undoLabel)
+        {
+            if (_pathTrack == null || offsets == null || offsets.Count < 2)
+            {
+                return;
+            }
+
+            Undo.RecordObject(_pathTrack, undoLabel);
+
+            _pathLocalOffsets.Clear();
+            for (int i = 0; i < offsets.Count; i++)
+            {
+                _pathLocalOffsets.Add(offsets[i]);
+            }
+
+            float duration = Mathf.Max(MinDuration, _pathTrack.TrackDuration);
+            AnimationCurve ease = CloneCurve(_pathTrack.EaseCurve, 0f);
+
+            _pathTrack.UseLocalSpace = _pathUseLocalSpace;
+            _pathTrack.SetPathData(_pathLocalOffsets, ease, duration, _pathUseLocalSpace);
+            _pathTrack.TrackDuration = duration;
+
+            SetDirty(_pathTrack);
+            RefreshPreviewPoseIfStopped();
+        }
+
+        private void ApplyWorldPathToTrack(
+            IReadOnlyList<Vector3> worldPath,
+            AnimationCurve easeCurve,
+            float duration,
+            string undoLabel,
+            bool captureBaseline,
+            bool clearPostHistory)
+        {
+            if (_pathTrack == null || worldPath == null || worldPath.Count < 2)
+            {
+                return;
+            }
+
             Transform target = _pathTrack.ResolveTarget();
             if (target == null)
             {
                 return;
             }
 
-            var raw = new List<Vector3>(_samples.Count);
-            foreach (StrokeSample sample in _samples)
-            {
-                raw.Add(sample.worldPos);
-            }
-
-            List<Vector3> smoothed = SmoothPath(raw, _smoothing);
-            List<Vector3> simplified = SimplifyPath(smoothed, _pathSimplifyTolerance);
-            if (simplified.Count < 2)
+            List<Vector3> offsets = ConvertWorldPathToLocalOffsets(target, worldPath);
+            if (offsets.Count < 2)
             {
                 return;
             }
 
             _pathLocalOffsets.Clear();
-            _pathLocalOffsets.AddRange(ConvertWorldPathToLocalOffsets(target, simplified));
-            AnimationCurve ease = GenerateEaseCurve(_samples, _smoothing);
+            _pathLocalOffsets.AddRange(offsets);
 
-            Undo.RecordObject(_pathTrack, "Generate Gesture Path");
-            _pathTrack.SetPathData(_pathLocalOffsets, ease, _recommendedDuration, _pathUseLocalSpace);
-            _pathTrack.TrackDuration = _recommendedDuration;
+            AnimationCurve ease = CloneCurve(easeCurve ?? _pathTrack.EaseCurve, 0f);
+            float finalDuration = Mathf.Max(MinDuration, duration);
+
+            Undo.RecordObject(_pathTrack, undoLabel);
+            _pathTrack.UseLocalSpace = _pathUseLocalSpace;
+            _pathTrack.SetPathData(_pathLocalOffsets, ease, finalDuration, _pathUseLocalSpace);
+            _pathTrack.TrackDuration = finalDuration;
+
+            _recommendedDuration = finalDuration;
             SetDirty(_pathTrack);
 
-            RefreshPreviewPoseIfStopped();
-            Debug.Log($"[GestureTween] Path updated. points={_pathLocalOffsets.Count}, duration={_recommendedDuration:0.###}s");
-        }
-
-        private void WriteScaleKeyAtCurrentTime(float x, float y, float z)
-        {
-            if (_scaleTrack == null)
+            if (captureBaseline)
             {
-                return;
+                _lastStrokeBaselineOffsets = new List<Vector3>(_pathTrack.LocalPathPoints);
             }
 
-            float t = GetEditingNormalizedTime();
-            Undo.RecordObject(_scaleTrack, "Adjust Gesture Scale Curve");
-            AnimationCurve xCurve = UpsertCurveKey(_scaleTrack.XCurve, t, x, 1f);
-            AnimationCurve yCurve = UpsertCurveKey(_scaleTrack.YCurve, t, y, 1f);
-            AnimationCurve zCurve = UpsertCurveKey(_scaleTrack.ZCurve, t, z, 1f);
-            _scaleTrack.SetCurves(xCurve, yCurve, zCurve, _scaleTrack.TrackDuration);
-            SetDirty(_scaleTrack);
-            RefreshPreviewPoseIfStopped();
-        }
-
-        private void WriteRotationKeyAtCurrentTime(float x, float y, float z)
-        {
-            if (_rotationTrack == null)
+            if (clearPostHistory)
             {
-                return;
+                _postProcessUndoStack.Clear();
             }
 
-            float t = GetEditingNormalizedTime();
-            Undo.RecordObject(_rotationTrack, "Adjust Gesture Rotation Curve");
-            AnimationCurve xCurve = UpsertCurveKey(_rotationTrack.XCurve, t, x, 0f);
-            AnimationCurve yCurve = UpsertCurveKey(_rotationTrack.YCurve, t, y, 0f);
-            AnimationCurve zCurve = UpsertCurveKey(_rotationTrack.ZCurve, t, z, 0f);
-            _rotationTrack.SetCurves(xCurve, yCurve, zCurve, _rotationTrack.TrackDuration);
-            SetDirty(_rotationTrack);
             RefreshPreviewPoseIfStopped();
+            Debug.Log($"[GestureTween] Path updated. points={_pathTrack.LocalPathPoints.Count}, duration={finalDuration:0.###}s");
         }
 
         private void PlayPreview()
@@ -1034,16 +1201,6 @@ namespace GestureTween.Editor
             _timelineDuration = ComputeTimelineDuration(_previewAnimations);
         }
 
-        private float GetEditingNormalizedTime()
-        {
-            if (_previewController != null && _previewController.IsPlaying)
-            {
-                return GetPlayingNormalizedTime();
-            }
-
-            return Mathf.Clamp01(_previewTimeNormalized);
-        }
-
         private float GetPlayingNormalizedTime()
         {
             float duration = Mathf.Max(MinDuration, _timelineDuration);
@@ -1094,7 +1251,7 @@ namespace GestureTween.Editor
             }
 
             _workspace = GestureWorkspaceFactory.FindWorkspace(_rootTarget);
-            if (_workspace == null && (forceCreate || _autoCreateWorkspace))
+            if (_workspace == null && forceCreate)
             {
                 _workspace = GestureWorkspaceFactory.EnsureWorkspace(_rootTarget);
             }
@@ -1108,17 +1265,13 @@ namespace GestureTween.Editor
             {
                 _timeline = null;
                 _pathTrack = null;
-                _scaleTrack = null;
-                _rotationTrack = null;
                 return;
             }
 
             _timeline = _workspace.Timeline != null ? _workspace.Timeline : _workspace.GetComponent<DOTweenTimeline>();
             _pathTrack = _workspace.PathTrack != null ? _workspace.PathTrack : _workspace.GetComponent<GesturePathTrack>();
-            _scaleTrack = _workspace.ScaleTrack != null ? _workspace.ScaleTrack : _workspace.GetComponent<GestureScaleTrack>();
-            _rotationTrack = _workspace.RotationTrack != null ? _workspace.RotationTrack : _workspace.GetComponent<GestureRotationTrack>();
 
-            _workspace.SetReferences(_timeline, _pathTrack, _scaleTrack, _rotationTrack);
+            _workspace.SetReferences(_timeline, _pathTrack);
             _workspace.BindRootToTracks();
 
             if (_pathTrack != null)
@@ -1139,42 +1292,18 @@ namespace GestureTween.Editor
             _pathLocalOffsets.Clear();
             _pathLocalOffsets.Add(Vector3.zero);
             _pathLocalOffsets.Add(Vector3.right);
-            _pathTrack.SetPathData(_pathLocalOffsets, AnimationCurve.Linear(0f, 0f, 1f, 1f), _recommendedDuration, _pathUseLocalSpace);
+
+            _pathTrack.SetPathData(
+                _pathLocalOffsets,
+                AnimationCurve.Linear(0f, 0f, 1f, 1f),
+                Mathf.Max(MinDuration, _recommendedDuration),
+                _pathUseLocalSpace);
+
             SetDirty(_pathTrack);
-            RefreshPreviewPoseIfStopped();
-        }
 
-        private void ResetScaleTrack()
-        {
-            if (_scaleTrack == null)
-            {
-                return;
-            }
+            _postProcessUndoStack.Clear();
+            _lastStrokeBaselineOffsets = new List<Vector3>(_pathTrack.LocalPathPoints);
 
-            Undo.RecordObject(_scaleTrack, "Reset Gesture Scale Track");
-            _scaleTrack.SetCurves(
-                AnimationCurve.Linear(0f, 1f, 1f, 1f),
-                AnimationCurve.Linear(0f, 1f, 1f, 1f),
-                AnimationCurve.Linear(0f, 1f, 1f, 1f),
-                _scaleTrack.TrackDuration);
-            SetDirty(_scaleTrack);
-            RefreshPreviewPoseIfStopped();
-        }
-
-        private void ResetRotationTrack()
-        {
-            if (_rotationTrack == null)
-            {
-                return;
-            }
-
-            Undo.RecordObject(_rotationTrack, "Reset Gesture Rotation Track");
-            _rotationTrack.SetCurves(
-                AnimationCurve.Linear(0f, 0f, 1f, 0f),
-                AnimationCurve.Linear(0f, 0f, 1f, 0f),
-                AnimationCurve.Linear(0f, 0f, 1f, 0f),
-                _rotationTrack.TrackDuration);
-            SetDirty(_rotationTrack);
             RefreshPreviewPoseIfStopped();
         }
 
@@ -1188,8 +1317,6 @@ namespace GestureTween.Editor
             SetDirty(_workspace);
             SetDirty(_timeline);
             SetDirty(_pathTrack);
-            SetDirty(_scaleTrack);
-            SetDirty(_rotationTrack);
 
             if (_workspace.gameObject.scene.IsValid())
             {
@@ -1221,73 +1348,6 @@ namespace GestureTween.Editor
             return new AnimationCurve(curve.keys);
         }
 
-        private static AnimationCurve UpsertCurveKey(AnimationCurve source, float time, float value, float fallbackValue)
-        {
-            AnimationCurve curve = CloneCurve(source, fallbackValue);
-            time = Mathf.Clamp01(time);
-
-            int nearestKey = FindNearestKey(curve, time, KeyMergeThreshold);
-            if (nearestKey >= 0)
-            {
-                Keyframe key = curve.keys[nearestKey];
-                key.time = time;
-                key.value = value;
-                curve.MoveKey(nearestKey, key);
-            }
-            else
-            {
-                curve.AddKey(new Keyframe(time, value));
-            }
-
-            EnsureBoundaryKey(curve, 0f);
-            EnsureBoundaryKey(curve, 1f);
-            SmoothCurveTangents(curve);
-            return curve;
-        }
-
-        private static int FindNearestKey(AnimationCurve curve, float time, float threshold)
-        {
-            if (curve == null)
-            {
-                return -1;
-            }
-
-            int found = -1;
-            float min = threshold;
-            for (int i = 0; i < curve.length; i++)
-            {
-                float delta = Mathf.Abs(curve.keys[i].time - time);
-                if (delta > min)
-                {
-                    continue;
-                }
-
-                min = delta;
-                found = i;
-            }
-
-            return found;
-        }
-
-        private static void EnsureBoundaryKey(AnimationCurve curve, float time)
-        {
-            if (curve == null)
-            {
-                return;
-            }
-
-            const float epsilon = 0.0001f;
-            for (int i = 0; i < curve.length; i++)
-            {
-                if (Mathf.Abs(curve.keys[i].time - time) < epsilon)
-                {
-                    return;
-                }
-            }
-
-            curve.AddKey(new Keyframe(time, curve.Evaluate(time)));
-        }
-
         private static void SmoothCurveTangents(AnimationCurve curve)
         {
             if (curve == null)
@@ -1301,7 +1361,6 @@ namespace GestureTween.Editor
                 AnimationUtility.SetKeyRightTangentMode(curve, i, AnimationUtility.TangentMode.ClampedAuto);
             }
         }
-
         private static List<Vector3> BuildWorldPath(Transform target, IReadOnlyList<Vector3> localOffsets)
         {
             var points = new List<Vector3>();
@@ -1322,7 +1381,7 @@ namespace GestureTween.Editor
             return points;
         }
 
-        private static List<Vector3> ConvertWorldPathToLocalOffsets(Transform target, List<Vector3> worldPath)
+        private static List<Vector3> ConvertWorldPathToLocalOffsets(Transform target, IReadOnlyList<Vector3> worldPath)
         {
             var offsets = new List<Vector3>(worldPath.Count);
             if (target == null || worldPath == null || worldPath.Count == 0)
@@ -1341,52 +1400,104 @@ namespace GestureTween.Editor
             return offsets;
         }
 
-        private static List<Vector3> SmoothPath(List<Vector3> raw, float smoothing)
+        private static List<Vector3> ApplyIterativeSmoothing(IReadOnlyList<Vector3> raw, float strength, int passes)
         {
-            if (raw == null || raw.Count <= 2)
+            if (raw == null)
             {
-                return raw != null ? new List<Vector3>(raw) : new List<Vector3>();
+                return new List<Vector3>();
             }
 
-            int radius = Mathf.RoundToInt(Mathf.Lerp(0f, 4f, Mathf.Clamp01(smoothing)));
-            if (radius <= 0)
+            if (raw.Count <= 2 || strength <= 0f || passes <= 0)
             {
                 return new List<Vector3>(raw);
             }
 
-            var result = new List<Vector3>(raw.Count);
-            for (int i = 0; i < raw.Count; i++)
+            var current = new List<Vector3>(raw);
+            var next = new List<Vector3>(raw.Count);
+            strength = Mathf.Clamp01(strength);
+            int iterationCount = Mathf.Max(1, passes);
+
+            for (int pass = 0; pass < iterationCount; pass++)
             {
-                Vector3 sum = Vector3.zero;
-                int count = 0;
-                int from = Mathf.Max(0, i - radius);
-                int to = Mathf.Min(raw.Count - 1, i + radius);
-                for (int j = from; j <= to; j++)
+                next.Clear();
+                next.Add(current[0]);
+
+                for (int i = 1; i < current.Count - 1; i++)
                 {
-                    sum += raw[j];
-                    count++;
+                    Vector3 prev = current[i - 1];
+                    Vector3 point = current[i];
+                    Vector3 nextPoint = current[i + 1];
+
+                    Vector3 laplacian = ((prev + nextPoint) * 0.5f) - point;
+                    float cornerWeight = Vector3.Angle(point - prev, nextPoint - point) / 180f;
+                    float adaptive = Mathf.Lerp(0.45f, 1f, cornerWeight);
+
+                    Vector3 delta = laplacian * (strength * adaptive);
+                    float maxStep = Mathf.Max(0.0001f, (nextPoint - prev).magnitude * 0.5f);
+                    if (delta.magnitude > maxStep)
+                    {
+                        delta = delta.normalized * maxStep;
+                    }
+
+                    next.Add(point + delta);
                 }
 
-                result.Add(count > 0 ? sum / count : raw[i]);
+                next.Add(current[^1]);
+
+                var temp = current;
+                current = next;
+                next = temp;
             }
 
-            result[0] = raw[0];
-            result[^1] = raw[^1];
-            return result;
+            current[0] = raw[0];
+            current[^1] = raw[^1];
+            return current;
         }
 
-        private static List<Vector3> SimplifyPath(List<Vector3> points, float tolerance)
+        private static float ComputeWorldTolerance(IReadOnlyList<Vector3> points, float amount)
         {
-            if (points == null || points.Count <= 2 || tolerance <= 0f)
+            amount = Mathf.Clamp01(amount);
+            float extent = Mathf.Max(0.05f, ComputeBoundsExtent(points));
+            return Mathf.Lerp(0.0004f, 0.08f, amount) * extent;
+        }
+
+        private static float ComputeBoundsExtent(IReadOnlyList<Vector3> points)
+        {
+            if (points == null || points.Count == 0)
             {
-                return points != null ? new List<Vector3>(points) : new List<Vector3>();
+                return 0f;
+            }
+
+            Vector3 min = points[0];
+            Vector3 max = points[0];
+            for (int i = 1; i < points.Count; i++)
+            {
+                min = Vector3.Min(min, points[i]);
+                max = Vector3.Max(max, points[i]);
+            }
+
+            Vector3 size = max - min;
+            return Mathf.Max(size.x, size.y, size.z);
+        }
+
+        private static List<Vector3> SimplifyPath(IReadOnlyList<Vector3> points, float tolerance)
+        {
+            if (points == null)
+            {
+                return new List<Vector3>();
+            }
+
+            if (points.Count <= 2 || tolerance <= 0f)
+            {
+                return new List<Vector3>(points);
             }
 
             float toleranceSq = tolerance * tolerance;
             var keep = new bool[points.Count];
             keep[0] = true;
             keep[^1] = true;
-            SimplifySection(points, 0, points.Count - 1, toleranceSq, keep);
+
+            SimplifyPathSection(points, 0, points.Count - 1, toleranceSq, keep);
 
             var result = new List<Vector3>(points.Count);
             for (int i = 0; i < points.Count; i++)
@@ -1399,16 +1510,15 @@ namespace GestureTween.Editor
 
             if (result.Count >= 2)
             {
+                result[0] = points[0];
+                result[^1] = points[^1];
                 return result;
             }
 
-            result.Clear();
-            result.Add(points[0]);
-            result.Add(points[^1]);
-            return result;
+            return new List<Vector3> { points[0], points[^1] };
         }
 
-        private static void SimplifySection(List<Vector3> points, int start, int end, float toleranceSq, bool[] keep)
+        private static void SimplifyPathSection(IReadOnlyList<Vector3> points, int start, int end, float toleranceSq, bool[] keep)
         {
             if (end <= start + 1)
             {
@@ -1438,8 +1548,8 @@ namespace GestureTween.Editor
             }
 
             keep[index] = true;
-            SimplifySection(points, start, index, toleranceSq, keep);
-            SimplifySection(points, index, end, toleranceSq, keep);
+            SimplifyPathSection(points, start, index, toleranceSq, keep);
+            SimplifyPathSection(points, index, end, toleranceSq, keep);
         }
 
         private static float DistancePointToSegmentSq(Vector3 point, Vector3 a, Vector3 b)
@@ -1456,61 +1566,391 @@ namespace GestureTween.Editor
             return (point - projection).sqrMagnitude;
         }
 
-        private static AnimationCurve GenerateEaseCurve(List<StrokeSample> samples, float smoothing)
+        private static List<Vector3> SimplifyToBezierPath(IReadOnlyList<Vector3> source, float amount, float density)
         {
-            int count = samples.Count;
-            if (count < 2)
+            if (source == null)
+            {
+                return new List<Vector3>();
+            }
+
+            if (source.Count <= 2)
+            {
+                return new List<Vector3>(source);
+            }
+
+            amount = Mathf.Clamp01(amount);
+            density = Mathf.Clamp(density, 0.3f, 2.5f);
+
+            float rdpTolerance = ComputeWorldTolerance(source, Mathf.Lerp(0.08f, 1f, amount));
+            List<Vector3> anchors = SimplifyPath(source, rdpTolerance);
+            if (anchors.Count < 2)
+            {
+                return new List<Vector3>(source);
+            }
+
+            float tension = Mathf.Lerp(0.15f, 0.68f, amount);
+            int minSamples = Mathf.RoundToInt(Mathf.Lerp(16f, 4f, amount));
+
+            var curvePoints = new List<Vector3>(anchors.Count * 6) { anchors[0] };
+            for (int i = 0; i < anchors.Count - 1; i++)
+            {
+                Vector3 p0 = anchors[i];
+                Vector3 p1 = anchors[i + 1];
+                Vector3 prev = i > 0 ? anchors[i - 1] : p0;
+                Vector3 next = i + 2 < anchors.Count ? anchors[i + 2] : p1;
+
+                Vector3 tangent0 = (p1 - prev) * (0.5f * tension);
+                Vector3 tangent1 = (next - p0) * (0.5f * tension);
+                Vector3 c0 = p0 + tangent0 / 3f;
+                Vector3 c1 = p1 - tangent1 / 3f;
+
+                float estimatedLength = EstimateBezierLength(p0, c0, c1, p1, 6);
+                int samples = Mathf.Clamp(Mathf.RoundToInt(estimatedLength * density * 4f), minSamples, 36);
+
+                for (int s = 1; s <= samples; s++)
+                {
+                    float t = s / (float)samples;
+                    curvePoints.Add(EvaluateCubicBezier(p0, c0, c1, p1, t));
+                }
+            }
+
+            if (curvePoints.Count > MaxBezierResamplePoints)
+            {
+                curvePoints = ResamplePathIfNeeded(curvePoints, MaxBezierResamplePoints);
+            }
+
+            curvePoints[0] = source[0];
+            curvePoints[^1] = source[^1];
+            return curvePoints;
+        }
+
+        private static Vector3 EvaluateCubicBezier(Vector3 p0, Vector3 c0, Vector3 c1, Vector3 p1, float t)
+        {
+            float u = 1f - t;
+            float tt = t * t;
+            float uu = u * u;
+            float uuu = uu * u;
+            float ttt = tt * t;
+            return (uuu * p0) + (3f * uu * t * c0) + (3f * u * tt * c1) + (ttt * p1);
+        }
+
+        private static float EstimateBezierLength(Vector3 p0, Vector3 c0, Vector3 c1, Vector3 p1, int subdivisions)
+        {
+            float length = 0f;
+            Vector3 prev = p0;
+            int steps = Mathf.Max(2, subdivisions);
+            for (int i = 1; i <= steps; i++)
+            {
+                float t = i / (float)steps;
+                Vector3 point = EvaluateCubicBezier(p0, c0, c1, p1, t);
+                length += Vector3.Distance(prev, point);
+                prev = point;
+            }
+
+            return length;
+        }
+
+        private static List<Vector3> ResamplePathIfNeeded(IReadOnlyList<Vector3> source, int maxCount)
+        {
+            if (source == null)
+            {
+                return new List<Vector3>();
+            }
+
+            if (source.Count <= maxCount)
+            {
+                return new List<Vector3>(source);
+            }
+
+            var cumulative = new float[source.Count];
+            float total = 0f;
+            cumulative[0] = 0f;
+            for (int i = 1; i < source.Count; i++)
+            {
+                total += Vector3.Distance(source[i - 1], source[i]);
+                cumulative[i] = total;
+            }
+
+            if (total <= 0.0001f)
+            {
+                return new List<Vector3> { source[0], source[^1] };
+            }
+
+            var result = new List<Vector3>(maxCount) { source[0] };
+            int segmentIndex = 1;
+            for (int i = 1; i < maxCount - 1; i++)
+            {
+                float targetLength = total * (i / (float)(maxCount - 1));
+                while (segmentIndex < cumulative.Length - 1 && cumulative[segmentIndex] < targetLength)
+                {
+                    segmentIndex++;
+                }
+
+                int prevIndex = Mathf.Max(0, segmentIndex - 1);
+                float a = cumulative[prevIndex];
+                float b = cumulative[segmentIndex];
+                float segmentT = b > a ? Mathf.Clamp01((targetLength - a) / (b - a)) : 0f;
+                result.Add(Vector3.Lerp(source[prevIndex], source[segmentIndex], segmentT));
+            }
+
+            result.Add(source[^1]);
+            return result;
+        }
+
+        private static AnimationCurve BuildOptimizedEaseCurve(
+            IReadOnlyList<StrokeSample> samples,
+            float intentStrength,
+            float jitterSuppression,
+            float keyReduction)
+        {
+            if (samples == null || samples.Count < 2)
             {
                 return AnimationCurve.Linear(0f, 0f, 1f, 1f);
             }
 
-            var speeds = new float[count - 1];
+            int segmentCount = samples.Count - 1;
+            var segmentDurations = new float[segmentCount];
+            var segmentSpeeds = new float[segmentCount];
             float maxSpeed = 0f;
-            for (int i = 1; i < count; i++)
+
+            for (int i = 0; i < segmentCount; i++)
             {
-                float dt = Mathf.Max(0.0001f, samples[i].timestamp - samples[i - 1].timestamp);
-                float dist = Vector3.Distance(samples[i].worldPos, samples[i - 1].worldPos);
-                float speed = dist / dt;
-                speeds[i - 1] = speed;
+                float dt = Mathf.Max(0.0005f, samples[i + 1].timestamp - samples[i].timestamp);
+                float distance = Vector3.Distance(samples[i + 1].worldPos, samples[i].worldPos);
+                float speed = distance / dt;
+
+                segmentDurations[i] = dt;
+                segmentSpeeds[i] = speed;
                 maxSpeed = Mathf.Max(maxSpeed, speed);
             }
 
-            if (maxSpeed < 0.0001f)
+            if (maxSpeed <= 0.0001f)
             {
-                maxSpeed = 1f;
+                return AnimationCurve.Linear(0f, 0f, 1f, 1f);
             }
 
-            var cumulative = new float[count];
+            int halfWindow = Mathf.RoundToInt(Mathf.Lerp(1f, 4f, Mathf.Clamp01(jitterSuppression)));
+            int medianWindow = Mathf.Clamp(2 * halfWindow + 1, 3, 11);
+
+            float[] medianFiltered = MedianFilter(segmentSpeeds, medianWindow);
+            float emaAlpha = Mathf.Lerp(0.68f, 0.22f, Mathf.Clamp01(jitterSuppression));
+            float[] speedEnvelope = ExponentialSmooth(medianFiltered, emaAlpha);
+
+            float clampedIntent = Mathf.Clamp01(intentStrength);
+            float gamma = Mathf.Lerp(0.8f, 1.6f, clampedIntent);
+
+            var cumulative = new float[samples.Count];
             float totalWeight = 0f;
-            for (int i = 1; i < count; i++)
+            for (int i = 0; i < segmentCount; i++)
             {
-                float normalizedSpeed = Mathf.Clamp01(speeds[i - 1] / maxSpeed);
-                float weight = Mathf.Lerp(1f, Mathf.Max(0.05f, normalizedSpeed), 1f - smoothing);
-                totalWeight += weight;
-                cumulative[i] = totalWeight;
+                float normalizedSpeed = Mathf.Clamp01(speedEnvelope[i] / maxSpeed);
+                float shaped = Mathf.Pow(Mathf.Max(0.02f, normalizedSpeed), gamma);
+
+                float weight = Mathf.Lerp(1f, shaped, clampedIntent);
+                weight = Mathf.Lerp(weight, 1f, jitterSuppression * 0.35f);
+
+                totalWeight += weight * segmentDurations[i];
+                cumulative[i + 1] = totalWeight;
             }
 
-            if (totalWeight < 0.0001f)
+            if (totalWeight <= 0.0001f)
             {
-                totalWeight = 1f;
+                return AnimationCurve.Linear(0f, 0f, 1f, 1f);
             }
 
             float startTime = samples[0].timestamp;
-            float totalTime = Mathf.Max(0.0001f, samples[^1].timestamp - startTime);
-            var keys = new Keyframe[count];
-            keys[0] = new Keyframe(0f, 0f);
-            for (int i = 1; i < count; i++)
+            float totalTime = Mathf.Max(0.0005f, samples[^1].timestamp - startTime);
+
+            var points = new List<Vector2>(samples.Count);
+            points.Add(new Vector2(0f, 0f));
+
+            for (int i = 1; i < samples.Count - 1; i++)
             {
                 float t = Mathf.Clamp01((samples[i].timestamp - startTime) / totalTime);
                 float p = Mathf.Clamp01(cumulative[i] / totalWeight);
-                p = Mathf.Max(p, keys[i - 1].value);
-                keys[i] = new Keyframe(t, p);
+                p = Mathf.Max(p, points[^1].y + 0.0002f);
+                points.Add(new Vector2(t, p));
             }
 
+            points.Add(new Vector2(1f, 1f));
+
+            if (points.Count > 3 && jitterSuppression > 0f)
+            {
+                for (int i = 1; i < points.Count - 1; i++)
+                {
+                    float left = points[i - 1].y;
+                    float current = points[i].y;
+                    float right = points[i + 1].y;
+                    float softened = Mathf.Lerp(current, (left + right) * 0.5f, jitterSuppression * 0.5f);
+                    float clamped = Mathf.Clamp(softened, left + 0.0001f, right - 0.0001f);
+                    points[i] = new Vector2(points[i].x, clamped);
+                }
+            }
+
+            float simplifyTolerance = Mathf.Lerp(0.0005f, 0.035f, Mathf.Clamp01(keyReduction));
+            List<Vector2> simplified = Simplify2D(points, simplifyTolerance);
+
+            var keys = new Keyframe[simplified.Count];
+            for (int i = 0; i < simplified.Count; i++)
+            {
+                float time = Mathf.Clamp01(simplified[i].x);
+                float value = Mathf.Clamp01(simplified[i].y);
+
+                if (i > 0)
+                {
+                    value = Mathf.Max(value, keys[i - 1].value + 0.0001f);
+                }
+
+                keys[i] = new Keyframe(time, value);
+            }
+
+            keys[0] = new Keyframe(0f, 0f);
             keys[^1] = new Keyframe(1f, 1f);
+
             var curve = new AnimationCurve(keys);
             SmoothCurveTangents(curve);
             return curve;
+        }
+
+        private static float[] MedianFilter(float[] source, int windowSize)
+        {
+            if (source == null || source.Length == 0)
+            {
+                return Array.Empty<float>();
+            }
+
+            int half = Mathf.Max(1, windowSize / 2);
+            var output = new float[source.Length];
+            var buffer = new List<float>(windowSize);
+
+            for (int i = 0; i < source.Length; i++)
+            {
+                buffer.Clear();
+                int from = Mathf.Max(0, i - half);
+                int to = Mathf.Min(source.Length - 1, i + half);
+                for (int j = from; j <= to; j++)
+                {
+                    buffer.Add(source[j]);
+                }
+
+                buffer.Sort();
+                output[i] = buffer[buffer.Count / 2];
+            }
+
+            return output;
+        }
+
+        private static float[] ExponentialSmooth(float[] source, float alpha)
+        {
+            if (source == null || source.Length == 0)
+            {
+                return Array.Empty<float>();
+            }
+
+            alpha = Mathf.Clamp01(alpha);
+            var forward = new float[source.Length];
+            var backward = new float[source.Length];
+
+            forward[0] = source[0];
+            for (int i = 1; i < source.Length; i++)
+            {
+                forward[i] = Mathf.Lerp(forward[i - 1], source[i], alpha);
+            }
+
+            backward[^1] = forward[^1];
+            float backwardAlpha = Mathf.Clamp01(alpha * 0.5f);
+            for (int i = source.Length - 2; i >= 0; i--)
+            {
+                backward[i] = Mathf.Lerp(backward[i + 1], forward[i], backwardAlpha);
+            }
+
+            return backward;
+        }
+
+        private static List<Vector2> Simplify2D(IReadOnlyList<Vector2> points, float tolerance)
+        {
+            if (points == null)
+            {
+                return new List<Vector2>();
+            }
+
+            if (points.Count <= 2 || tolerance <= 0f)
+            {
+                return new List<Vector2>(points);
+            }
+
+            float toleranceSq = tolerance * tolerance;
+            var keep = new bool[points.Count];
+            keep[0] = true;
+            keep[^1] = true;
+
+            Simplify2DSection(points, 0, points.Count - 1, toleranceSq, keep);
+
+            var result = new List<Vector2>(points.Count);
+            for (int i = 0; i < points.Count; i++)
+            {
+                if (keep[i])
+                {
+                    result.Add(points[i]);
+                }
+            }
+
+            if (result.Count >= 2)
+            {
+                result[0] = points[0];
+                result[^1] = points[^1];
+                return result;
+            }
+
+            return new List<Vector2> { points[0], points[^1] };
+        }
+
+        private static void Simplify2DSection(IReadOnlyList<Vector2> points, int start, int end, float toleranceSq, bool[] keep)
+        {
+            if (end <= start + 1)
+            {
+                return;
+            }
+
+            int index = -1;
+            float maxDistSq = 0f;
+            Vector2 a = points[start];
+            Vector2 b = points[end];
+
+            for (int i = start + 1; i < end; i++)
+            {
+                float distSq = DistancePointToSegmentSq(points[i], a, b);
+                if (distSq <= maxDistSq)
+                {
+                    continue;
+                }
+
+                maxDistSq = distSq;
+                index = i;
+            }
+
+            if (index < 0 || maxDistSq <= toleranceSq)
+            {
+                return;
+            }
+
+            keep[index] = true;
+            Simplify2DSection(points, start, index, toleranceSq, keep);
+            Simplify2DSection(points, index, end, toleranceSq, keep);
+        }
+
+        private static float DistancePointToSegmentSq(Vector2 point, Vector2 a, Vector2 b)
+        {
+            Vector2 ab = b - a;
+            float abLenSq = ab.sqrMagnitude;
+            if (abLenSq <= 0.000001f)
+            {
+                return (point - a).sqrMagnitude;
+            }
+
+            float t = Mathf.Clamp01(Vector2.Dot(point - a, ab) / abLenSq);
+            Vector2 projection = a + t * ab;
+            return (point - projection).sqrMagnitude;
         }
     }
 }

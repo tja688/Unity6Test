@@ -1,27 +1,32 @@
-# GestureTween Workbench
+# GestureTween Path Workbench
 
-`GestureTween` 现在是一个以 **DOTweenTimeline 工作区** 为核心的动效制作台。
+`GestureTween` 现已收敛为 **快速路径手绘专用工具**。
 
-## 核心变化
+旋转、缩放和其他复杂叠加效果，建议直接使用 `DOTween Animation + Timeline` 原生能力完成。
 
-- 自动工作区：不再直接改根节点，工具会在根节点下创建 `__PerfWorkspace`
-- 通道职责分离：路径、缩放、旋转分别由独立 Track 组件驱动
-- 3 轴编辑：Scale / Rotation 全部改为 `X/Y/Z` 独立曲线
-- Scene 手柄调参：在 Scene 里拖拽轴向手柄，直接写入曲线
-- Timeline 实时预览：支持预览倍速（含 `0.1x` 慢速调试）
+## 当前能力
+
+- 一键创建工作区：在根节点下自动创建 `__PerfWorkspace`
+- 专注 Path 通道：仅保留 `GesturePathTrack`
+- Shift 手绘虚影跟随：绘制时显示半透明“路径驱动虚影”（仅视觉，不改对象状态）
+- 路径后处理：
+  - 一键平滑（端点锁定，支持多轮叠加）
+  - 贝塞尔简化（RDP 控制点抽象 + 曲线重采样）
+  - 平滑 + 贝塞尔组合处理
+- 缓动优化：根据手绘速度节奏重建更稳定的 Ease 曲线
+- 后处理可撤销：支持“撤销一步后处理 / 还原到本次手绘原始路径”
+- Timeline 实时预览：支持播放、暂停、停回起点、倍速
 
 ## 目录结构
 
 ```text
 Assets/GestureTween/
 ├── Editor/
-│   ├── GestureCurveWindow.cs        # 工作台窗口（全局/路径/缩放/旋转）
-│   └── GestureWorkspaceFactory.cs   # 自动创建/修复工作区
+│   ├── GestureCurveWindow.cs        # 路径工作台（手绘 + 后处理 + 预览）
+│   └── GestureWorkspaceFactory.cs   # 手动创建/修复工作区
 └── Runtime/
-    ├── GestureWorkspace.cs          # 工作区组件（绑定 root + timeline + tracks）
+    ├── GestureWorkspace.cs          # 工作区组件（绑定 root + timeline + path）
     ├── GesturePathTrack.cs          # 路径通道（IDOTweenAnimation）
-    ├── GestureScaleTrack.cs         # 缩放通道（XYZ）
-    ├── GestureRotationTrack.cs      # 旋转通道（XYZ）
     ├── GestureCurvePreset.cs        # 旧版预设（兼容保留）
     └── GestureTweenPlayer.cs        # 旧版播放器（兼容保留）
 ```
@@ -30,14 +35,14 @@ Assets/GestureTween/
 
 1. 打开 `Window > GestureTween > Scene Motion Painter`
 2. 选择根节点（Root）
-3. 点击 `创建/修复工作区`（或保持自动创建开启）
-4. 在模式栏切换：
-   - `路径`：Scene 里绘制路径并生成 Path Track
-   - `缩放`：拖拽 XYZ 手柄写入 Scale 曲线
-   - `旋转`：拖拽 XYZ 手柄写入 Rotation 曲线
-   - `全局`：统一调整工作区参数（该模式下 Scene 不显示小面板）
-5. 用 `Timeline 预览` 区域播放、暂停、改倍速、慢速调试
-6. 点击 `保存当前调试状态`
+3. 点击 `创建/修复工作区`
+4. 在 Scene 视图按住 `Shift + 左键` 手绘路径
+5. 在窗口中按需执行后处理：
+   - `一键平滑路径`
+   - `贝塞尔简化路径`
+   - `平滑 + 贝塞尔简化`
+   - `重建节奏缓动`
+6. 用 `Timeline 预览` 区域进行调试，最后点击 `保存当前调试状态`
 
 ## 工作区命名
 
@@ -50,5 +55,5 @@ Assets/GestureTween/
 ## 注意事项
 
 - 需要 DOTween Pro 与 `Assets/Plugins/DOTweenTimeline`
-- Path Track 采用相对偏移点集，便于复用
-- Scale / Rotation Track 是 `IDOTweenAnimation`，可直接参与 Timeline 预览
+- `GesturePathTrack` 保存的是以起点为参考的 local offsets，便于复用
+- 本工具不再维护旋转/缩放轨道；请交给 DOTween 原生轨道处理
