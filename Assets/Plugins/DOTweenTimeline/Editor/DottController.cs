@@ -60,6 +60,12 @@ namespace Dott.Editor
 
         public void Pause()
         {
+            if (currentPlayAnimations != null)
+            {
+                var elapsed = ElapsedTime;
+                GoTo(currentPlayAnimations, elapsed);
+            }
+
             Paused = true;
         }
 

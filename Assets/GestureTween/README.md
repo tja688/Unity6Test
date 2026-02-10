@@ -1,139 +1,54 @@
-# GestureTween
+# GestureTween Workbench
 
-**场景手绘动效工具** - 在 Unity Scene 视图中通过手势直接绘制运动曲线，并导出为 DOTween 兼容的动画预设。
+`GestureTween` 现在是一个以 **DOTweenTimeline 工作区** 为核心的动效制作台。
 
-## 功能特性
+## 核心变化
 
-- 🎨 **场景直绘**：直接在 Scene 视图中用鼠标绘制运动路径
-- 📊 **多通道支持**：支持位置路径、缩放、旋转三个独立通道
-- 🎯 **速度曲线生成**：根据绘制速度自动生成缓动曲线（Ease Curve）
-- 💾 **预设系统**：将绘制结果保存为可复用的 ScriptableObject 资产
-- 🔄 **DOTween 集成**：一键应用到 DOTweenPath、DOTweenAnimation 组件
-
-## 依赖项
-
-- **DOTween Pro** (必需)
-- Unity 2021.3 或更高版本
-
-## 快速开始
-
-### 1. 打开手绘工具窗口
-
-通过菜单 **Window > GestureTween > Scene Motion Painter** 打开工具窗口。
-
-### 2. 选择目标对象
-
-在 Hierarchy 中选择要应用动画的 GameObject，或在工具窗口的"目标对象"字段中指定。
-
-### 3. 绘制运动曲线
-
-1. 确保 **启用 Scene 绘制** 已勾选
-2. 选择绘制通道：
-   - **Position Path**：绘制运动路径
-   - **Scale**：向上拖动放大，向下拖动缩小
-   - **Rotation**：向右拖动顺时针旋转，向左拖动逆时针旋转
-3. 在 Scene 视图中：
-   - 按住 **Shift + 鼠标左键** 开始绘制（可在设置中关闭 Shift 要求）
-   - 释放鼠标完成绘制
-   - 按 **Esc** 取消当前绘制
-
-### 4. 调整参数
-
-| 参数 | 说明 |
-|------|------|
-| 平滑强度 | 曲线平滑程度 (0-1) |
-| 时长(秒) | 推荐动画播放时长 |
-| 采样最小距离 | 路径点之间的最小距离 |
-| 采样最小间隔 | 采样点之间的最小时间间隔 |
-| 路径简化容差 | Douglas-Peucker 算法简化阈值 |
-| 绘制平面 | XY / XZ / YZ / Camera Facing |
-
-### 5. 导出与应用
-
-- **保存为 Preset 资产**：将当前绘制结果保存为 `.asset` 文件
-- **应用到 DOTweenPath**：直接将路径写入目标的 DOTweenPath 组件
-- **应用到 DOTweenAnimation**：将缓动曲线应用到 DOTweenAnimation 组件
-- **应用到 GestureTweenPlayer**：自动生成预设并挂载播放器组件
-
-## 预设资产 (GestureCurvePreset)
-
-### 创建预设
-
-- 通过工具窗口的"保存为 Preset 资产"按钮创建
-- 或右键 **Create > GestureTween > Curve Preset** 手动创建
-
-### 预设属性
-
-| 属性 | 说明 |
-|------|------|
-| easeCurve | 缓动曲线，映射 [0,1] 时间到 [0,1] 进度 |
-| recommendedDuration | 推荐动画时长 |
-| hasPositionPath | 是否包含位置路径 |
-| localPathPoints | 相对于起点的局部坐标偏移列表 |
-| hasScaleChannel | 是否包含缩放通道 |
-| scaleCurve | 缩放曲线，值为缩放倍率 (1 = 原始大小) |
-| hasRotationChannel | 是否包含旋转通道 |
-| rotationCurve | 旋转曲线，值为 Z 轴角度增量 |
-
-## 运行时播放器 (GestureTweenPlayer)
-
-用于在运行时播放 GestureCurvePreset 动画。
-
-### 组件属性
-
-| 属性 | 说明 |
-|------|------|
-| Preset | 要播放的预设资产 |
-| Play On Enable | 是否在 OnEnable 时自动播放 |
-| Use Local Space | 是否使用局部坐标空间 |
-| Include Scale | 是否包含缩放动画 |
-| Include Rotation | 是否包含旋转动画 |
-| Link To GameObject | 是否将 Tween 生命周期绑定到 GameObject |
-
-### 脚本控制
-
-```csharp
-// 获取播放器组件
-var player = GetComponent<GestureTweenPlayer>();
-
-// 播放动画
-player.Play(restart: true);
-
-// 停止动画
-player.Stop();
-
-// 直接使用预设创建 Sequence
-var preset = Resources.Load<GestureCurvePreset>("MyPreset");
-Sequence seq = preset.CreateTransformSequence(transform);
-seq.Play();
-```
+- 自动工作区：不再直接改根节点，工具会在根节点下创建 `__PerfWorkspace`
+- 通道职责分离：路径、缩放、旋转分别由独立 Track 组件驱动
+- 3 轴编辑：Scale / Rotation 全部改为 `X/Y/Z` 独立曲线
+- Scene 手柄调参：在 Scene 里拖拽轴向手柄，直接写入曲线
+- Timeline 实时预览：支持预览倍速（含 `0.1x` 慢速调试）
 
 ## 目录结构
 
-```
+```text
 Assets/GestureTween/
 ├── Editor/
-│   └── GestureCurveWindow.cs    # 手绘工具编辑器窗口
-├── Runtime/
-│   ├── GestureCurvePreset.cs    # 预设资产定义
-│   └── GestureTweenPlayer.cs    # 运行时播放器组件
-├── Presets/
-│   └── Auto/                     # 自动生成的预设存放目录
-├── README.md                     # 使用说明文档
-└── ARCHITECTURE.md               # 开发架构文档
+│   ├── GestureCurveWindow.cs        # 工作台窗口（全局/路径/缩放/旋转）
+│   └── GestureWorkspaceFactory.cs   # 自动创建/修复工作区
+└── Runtime/
+    ├── GestureWorkspace.cs          # 工作区组件（绑定 root + timeline + tracks）
+    ├── GesturePathTrack.cs          # 路径通道（IDOTweenAnimation）
+    ├── GestureScaleTrack.cs         # 缩放通道（XYZ）
+    ├── GestureRotationTrack.cs      # 旋转通道（XYZ）
+    ├── GestureCurvePreset.cs        # 旧版预设（兼容保留）
+    └── GestureTweenPlayer.cs        # 旧版播放器（兼容保留）
 ```
 
-## 常见问题
+## 使用流程
 
-**Q: 为什么绘制没有反应？**  
-A: 检查是否已选择目标对象，并确保"启用 Scene 绘制"已勾选。默认需要按住 Shift 键。
+1. 打开 `Window > GestureTween > Scene Motion Painter`
+2. 选择根节点（Root）
+3. 点击 `创建/修复工作区`（或保持自动创建开启）
+4. 在模式栏切换：
+   - `路径`：Scene 里绘制路径并生成 Path Track
+   - `缩放`：拖拽 XYZ 手柄写入 Scale 曲线
+   - `旋转`：拖拽 XYZ 手柄写入 Rotation 曲线
+   - `全局`：统一调整工作区参数（该模式下 Scene 不显示小面板）
+5. 用 `Timeline 预览` 区域播放、暂停、改倍速、慢速调试
+6. 点击 `保存当前调试状态`
 
-**Q: 如何在运行时动态创建动画？**  
-A: 使用 `GestureCurvePreset.CreateTransformSequence()` 方法可以在运行时创建 DOTween Sequence。
+## 工作区命名
 
-**Q: 预设保存在哪里？**  
-A: 默认保存在 `Assets/GestureTween/Presets/` 目录，自动生成的预设在 `Auto/` 子目录。
+默认工作区命名为：
 
-## 许可证
+```text
+<RootName>__PerfWorkspace
+```
 
-此工具仅供项目内部使用。
+## 注意事项
+
+- 需要 DOTween Pro 与 `Assets/Plugins/DOTweenTimeline`
+- Path Track 采用相对偏移点集，便于复用
+- Scale / Rotation Track 是 `IDOTweenAnimation`，可直接参与 Timeline 预览

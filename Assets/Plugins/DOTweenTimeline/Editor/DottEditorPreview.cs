@@ -23,9 +23,17 @@ namespace Dott.Editor
         }
 
         private static readonly List<TweenData> Tweens = new();
+        private static double lastEditorTime;
+        private static float playbackSpeed = 1f;
 
         public static bool IsPlaying { get; private set; }
         public static double CurrentTime { get; private set; }
+        public static float PlaybackSpeed
+        {
+            get => playbackSpeed;
+            set => playbackSpeed = Mathf.Clamp(value, 0.01f, 8f);
+        }
+
         public static event Action Completed;
 
         static DottEditorPreview()
@@ -44,7 +52,7 @@ namespace Dott.Editor
             }
 
             IsPlaying = true;
-            CurrentTime = EditorApplication.timeSinceStartup;
+            lastEditorTime = EditorApplication.timeSinceStartup;
             EditorApplication.update += Update;
         }
 
@@ -53,6 +61,7 @@ namespace Dott.Editor
             IsPlaying = false;
             EditorApplication.update -= Update;
             CurrentTime = 0;
+            lastEditorTime = 0;
 
             for (var i = Tweens.Count - 1; i >= 0; i--)
             {
@@ -105,10 +114,17 @@ namespace Dott.Editor
 
         private static void Update()
         {
-            var prevTime = CurrentTime;
-            CurrentTime = EditorApplication.timeSinceStartup;
-            var delta = CurrentTime - prevTime;
-            DOTween.ManualUpdate((float)delta, (float)delta);
+            double editorTime = EditorApplication.timeSinceStartup;
+            double editorDelta = editorTime - lastEditorTime;
+            if (editorDelta < 0)
+            {
+                editorDelta = 0;
+            }
+
+            lastEditorTime = editorTime;
+            double scaledDelta = editorDelta * PlaybackSpeed;
+            CurrentTime += scaledDelta;
+            DOTween.ManualUpdate((float)scaledDelta, (float)scaledDelta);
             QueuePlayerLoopUpdate();
 
             var activeTweens = Tweens.Any(tweenData => tweenData.Tween.IsPlaying());

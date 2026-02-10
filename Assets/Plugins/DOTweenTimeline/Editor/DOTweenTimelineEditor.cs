@@ -10,6 +10,8 @@ namespace Dott.Editor
     [CustomEditor(typeof(DOTweenTimeline))]
     public class DOTweenTimelineEditor : UnityEditor.Editor
     {
+        private const string PreviewSpeedPrefKey = "Dott.PreviewSpeed";
+
         private DOTweenTimeline Timeline => (DOTweenTimeline)target;
 
         private DottController controller;
@@ -23,6 +25,7 @@ namespace Dott.Editor
         public override void OnInspectorGUI()
         {
             Timeline.OnValidate();
+            DrawPreviewSettings();
 
             animations = Timeline.GetComponents<MonoBehaviour>().Select(DottAnimation.FromComponent).Where(animation => animation != null).ToArray();
             selection.Validate(animations);
@@ -49,6 +52,7 @@ namespace Dott.Editor
 
         private void OnEnable()
         {
+            DottEditorPreview.PlaybackSpeed = EditorPrefs.GetFloat(PreviewSpeedPrefKey, 1f);
             controller = new DottController();
             selection = new DottSelection();
             view = new DottView();
@@ -288,6 +292,26 @@ namespace Dott.Editor
             {
                 controller.Stop();
             }
+        }
+
+        private static void DrawPreviewSettings()
+        {
+            EditorGUILayout.BeginHorizontal();
+            float current = DottEditorPreview.PlaybackSpeed;
+            float next = EditorGUILayout.Slider("Preview Speed", current, 0.05f, 4f);
+            if (!Mathf.Approximately(next, current))
+            {
+                DottEditorPreview.PlaybackSpeed = next;
+                EditorPrefs.SetFloat(PreviewSpeedPrefKey, next);
+            }
+
+            if (GUILayout.Button("1x", GUILayout.Width(34f)))
+            {
+                DottEditorPreview.PlaybackSpeed = 1f;
+                EditorPrefs.SetFloat(PreviewSpeedPrefKey, 1f);
+            }
+
+            EditorGUILayout.EndHorizontal();
         }
     }
 }
